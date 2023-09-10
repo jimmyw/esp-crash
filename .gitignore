@@ -1,0 +1,9 @@
+/build*
+.vscode*
+*.code-workspace
+.cache
+__pycache__
+*.pem
+*.lock
+managed_components/*
+dependencies.lock
