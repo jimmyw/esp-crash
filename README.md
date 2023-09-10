@@ -1,150 +1,75 @@
 | Supported Targets | ESP32 | ESP32-C3 | ESP32-S2 | ESP32-S3 |
 | ----------------- | ----- | -------- | -------- | -------- |
 
-# Basic Console Example (`esp_console_repl`)
+# ESP-Crash Example (`esp-crash-example`)
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
-
-This example illustrates the usage of the REPL (Read-Eval-Print Loop) APIs of the [Console Component](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/console.html#console) to create an interactive shell on the ESP chip. The interactive shell running on the ESP chip can then be controlled/interacted with over a serial interface. This example supports UART and USB interfaces.
-
-The interactive shell implemented in this example contains a wide variety of commands, and can act as a basis for applications that require a command-line interface (CLI).
-
-Compared to the [advanced console example](../advanced), this example requires less code to initialize and run the console. `esp_console_repl` API handles most of the details. If you'd like to customize the way console works (for example, process console commands in an existing task), please check the advanced console example.
+This example is tied to esp-crash, that can be found at https://esp-crash.wennlund.nu/ that is a free service to monitor and display crashes.
 
 ## How to use example
 
-This example can be used on boards with UART and USB interfaces. The sections below explain how to set up the board and configure the example.
+This example uses a coredump parition, name coredump. The build in crash-handler will wire a crash to this parition if you enable CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y in your sdkconfig.
 
-### Using with UART
+Before you can see your crashes uploaded, you need to access https://esp-crash.wennlund.nu/ with your github account, and register a new unique PROJECT_NAME. After you have registered it, you can add additional team members that also can examine the crahes.
 
-When UART interface is used, this example should run on any commonly available Espressif development board. UART interface is enabled by default (`CONFIG_ESP_CONSOLE_UART_DEFAULT` option in menuconfig). No extra configuration is required.
+## ESP-Crash Identifier
 
-### Using with USB_SERIAL_JTAG
+Using esp_crash_identifier_setup() you will add an identifier to ram, that will always be included in your crashdump. This identifier is in the format:
 
-On chips with USB_SERIAL_JTAG peripheral, console example can be used over the USB serial port.
+ESP_CRASH:<PROJECT_NAME>;<PROJECT_VER>;<DEVICE_ID>;
 
-* First, connect the USB cable to the USB_SERIAL_JTAG interface.
-* Second, run `idf.py menuconfig` and enable `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` option.
+Example:
 
-For more details about connecting and configuring USB_SERIAL_JTAG (including pin numbers), see the IDF Programming Guide:
-* [ESP32-C3 USB_SERIAL_JTAG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-guides/usb-serial-jtag-console.html)
-* [ESP32-S3 USB_SERIAL_JTAG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/usb-serial-jtag-console.html)
+ESP_CRASH:esp-crash-example;8e8e8df-5.1;6941729232066;
 
-### Using with USB CDC (USB_OTG peripheral)
+This is critical for our backend to pick up, just make it available to your registred project, and know what build file to match up
 
-USB_OTG peripheral can also provide a USB serial port which works with this example.
+## Uploading coredumps
 
-* First, connect the USB cable to the USB_OTG peripheral interface.
-* Second, run `idf.py menuconfig` and enable `CONFIG_ESP_CONSOLE_USB_CDC` option.
+Using esp_err_t upload_coredump(const char *url, const char *filename) as an example to upload the coredump directly from a parition to a server. This will read the flash parition and send it as raw data, nothing more nothing less.
+Upload your crashes to "https://esp-crash.wennlund.nu/dump" if you like to have a free store for your crashes.
 
-For more details about connecting and configuring USB_OTG (including pin numbers), see the IDF Programming Guide:
-* [ESP32-S2 USB_OTG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s2/api-guides/usb-otg-console.html)
-* [ESP32-S3 USB_OTG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/usb-otg-console.html)
+## Downloading coredumpos
 
-### Other configuration options
+Using esp_err_t esp_crash_webserver_start(httpd_handle_t handle); you can register the /crash.dmp webserver endpoint. Curling this address will download the last crash if available. After downloading this crash, you can upload it again to "https://esp-crash.wennlund.nu/dump" if you like.
 
-This example has an option to store the command history in Flash. This option is enabled by default.
+## Inverval crash upload
 
-To disable this, run `idf.py menuconfig` and disable `CONFIG_CONSOLE_STORE_HISTORY` option.
+Using esp_err_t esp_crash_upload_timer_init(); you will enable a 60s interval timer, that will try to find a existing core dump, and upload if possible. On success the coredump parition will be erased.
 
-### Build and Flash
+## Uploading build files
 
-Build the project and flash it to the board, then run monitor tool to view serial output:
+To be able to examine your crashes, you also need to upload the elf binary, with debugging symbols. This can be done with this oneliner:
 
 ```
-idf.py -p PORT flash monitor
+curl “https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&project_ver=$VERSION” -F file=build/esp-crash-example.elf
 ```
 
-(Replace PORT with the name of the serial port to use.)
+Make sure $VERSION is matching the same PRJECT_VER in your build. This command can easily be added your CI-System
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+### Cli commands
 
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
+
+```
+coredump_crash
+  Crash the esp32
+
+coredump_erase
+  Erase cordump partition
+
+coredump_upload  [-e] [url] [filename]
+  Upload core dump to server
+           url  Url to send to
+      filename  Filename
+   -e, --erase  Erase after successful upload
+```
+
 
 ## Example Output
 
-Enter the `help` command get a full list of all available commands. The following is a sample session of the Console Example where a variety of commands provided by the Console Example are used.
-
-On ESP32, GPIO15 may be connected to GND to remove the boot log output.
 
 ```
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-[esp32]> help
-help
-  Print the list of registered commands
-
-free
-  Get the total size of heap memory available
-
-restart
-  Restart the program
-
-deep_sleep  [-t <t>] [--io=<n>] [--io_level=<0|1>]
-  Enter deep sleep mode. Two wakeup modes are supported: timer and GPIO. If no
-  wakeup option is specified, will sleep indefinitely.
-  -t, --time=<t>  Wake up time, ms
-      --io=<n>  If specified, wakeup using GPIO with given number
-  --io_level=<0|1>  GPIO level to trigger wakeup
-
-join  [--timeout=<t>] <ssid> [<pass>]
-  Join WiFi AP as a station
-  --timeout=<t>  Connection timeout, ms
-        <ssid>  SSID of AP
-        <pass>  PSK of AP
-
-[esp32]> free
-257200
-[esp32]> deep_sleep -t 1000
-I (146929) deep_sleep: Enabling timer wakeup, timeout=1000000us
-I (619) heap_init: Initializing. RAM available for dynamic allocation:
-I (620) heap_init: At 3FFAE2A0 len 00001D60 (7 KiB): DRAM
-I (626) heap_init: At 3FFB7EA0 len 00028160 (160 KiB): DRAM
-I (645) heap_init: At 3FFE0440 len 00003BC0 (14 KiB): D/IRAM
-I (664) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
-I (684) heap_init: At 40093EA8 len 0000C158 (48 KiB): IRAM
-
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-[esp32]> join --timeout 10000 test_ap test_password
-I (182639) connect: Connecting to 'test_ap'
-I (184619) connect: Connected
-[esp32]> free
-212328
-[esp32]> restart
-I (205639) restart: Restarting
-I (616) heap_init: Initializing. RAM available for dynamic allocation:
-I (617) heap_init: At 3FFAE2A0 len 00001D60 (7 KiB): DRAM
-I (623) heap_init: At 3FFB7EA0 len 00028160 (160 KiB): DRAM
-I (642) heap_init: At 3FFE0440 len 00003BC0 (14 KiB): D/IRAM
-I (661) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
-I (681) heap_init: At 40093EA8 len 0000C158 (48 KiB): IRAM
-
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-[esp32]>
-
 ```
 
-## Troubleshooting
+## Whats upcoming?
 
-### Line Endings
-
-The line endings in the Console Example are configured to match particular serial monitors. Therefore, if the following log output appears, consider using a different serial monitor (e.g. Putty for Windows) or modify the example's [UART configuration](#Configuring-UART-and-VFS).
-
-```
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-Your terminal application does not support escape sequences.
-Line editing and history features are disabled.
-On Windows, try using Putty instead.
-esp32>
-```
+Im working on an interactive in browser gdb debug session. Its going to be awsome!
