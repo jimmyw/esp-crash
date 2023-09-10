@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <endian.h>
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_console.h"
@@ -18,6 +19,11 @@
 #include "cmd_system.h"
 #include "cmd_wifi.h"
 #include "cmd_nvs.h"
+#include "esp_mac.h"
+
+#include "esp_crash.h"
+#include "esp_crash_identifier.h"
+#include "esp_crash_cli.h"
 
 static const char* TAG = "esp-crash-main";
 #define PROMPT_STR CONFIG_IDF_TARGET
@@ -56,8 +62,11 @@ static void initialize_nvs(void)
     ESP_ERROR_CHECK(err);
 }
 
+
 void app_main(void)
 {
+    esp_crash_identifier_setup();
+
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     /* Prompt to be printed before each line.
@@ -81,6 +90,8 @@ void app_main(void)
     register_system();
     register_wifi();
 
+    esp_crash_cli_init();
+
 #if defined(CONFIG_ESP_CONSOLE_UART_DEFAULT) || defined(CONFIG_ESP_CONSOLE_UART_CUSTOM)
     esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
@@ -98,4 +109,6 @@ void app_main(void)
 #endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
+
+    ESP_LOGI(TAG, "Has crashdump: %d", esp_crash_coredump_available());
 }
