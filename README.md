@@ -27,21 +27,30 @@ Before you can see your uploaded crashes, you need to access https://esp-crash.w
 
 Using esp_crash_identifier_setup(), you can add an identifier to RAM, which will always be included in your crash dump. This identifier is in the format:
 
+```
 ESP_CRASH:<PROJECT_NAME>;<PROJECT_VER>;<DEVICE_ID>;
-
+```
 Example:
-
+```
 ESP_CRASH:esp-crash-example;8e8e8df-5.1;6941729232066;
-
+```
 This is critical for our backend to pick up, just make it available to your registered project, and know what build file to match up.
 
 ## Uploading coredumps
 
-Use esp_err_t upload_coredump(const char *url, const char *filename) to upload the coredump directly from a partition to a server. This will read the flash partition and send it as raw data. Upload your crashes to "https://esp-crash.wennlund.nu/dump" if you like to have a free store for your crashes.
+Use 
+```
+esp_err_t upload_coredump(const char *url, const char *filename)
+```
+to upload the coredump directly from a partition to a server. This will read the flash partition and send it as raw data. Upload your crashes to "https://esp-crash.wennlund.nu/dump" if you like to have a free store for your crashes.
 
 ## Downloading coredumps
 
-Use esp_err_t esp_crash_webserver_start(httpd_handle_t handle) to register the /crash.dmp webserver endpoint. Curling this address will download the last crash if available. After downloading this crash, you can upload it again to "https://esp-crash.wennlund.nu/dump" if you like.
+Use 
+```
+esp_err_t esp_crash_webserver_start(httpd_handle_t handle)
+```
+to register the /crash.dmp webserver endpoint. Curling this address will download the last crash if available. After downloading this crash, you can upload it again to "https://esp-crash.wennlund.nu/dump" if you like.
 
 ## Interval crash upload
 
@@ -51,12 +60,14 @@ Use esp_err_t esp_crash_upload_timer_init() to enable a 60s interval timer, that
 
 To be able to examine your crashes, you also need to upload the elf binary, with debugging symbols. This can be done with this one-liner:
 
+```
 curl “https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&project_ver=$VERSION” -F file=build/esp-crash-example.elf
+```
 
 Ensure $VERSION matches the same PROJECT_VER in your build. This command can easily be added to your CI system.
 
 ### CLI commands
-
+``
 coredump_crash
   Crash the esp32
 
@@ -68,7 +79,7 @@ coredump_upload  [-e] [url] [filename]
            url  Url to send to
       filename  Filename
    -e, --erase  Erase after successful upload
-
+``
 
 ## Example Output
 
