@@ -25,7 +25,11 @@ Before you can see your uploaded crashes, you need to access https://esp-crash.w
 
 ## ESP-Crash Identifier
 
-Using esp_crash_identifier_setup(), you can add an identifier to RAM, which will always be included in your crash dump. This identifier is in the format:
+Using
+```
+esp_err_t esp_crash_identifier_setup()
+```
+you can add an identifier to RAM, which will always be included in your crash dump. This identifier is in the format:
 
 ```
 ESP_CRASH:<PROJECT_NAME>;<PROJECT_VER>;<DEVICE_ID>;
@@ -54,7 +58,11 @@ to register the /crash.dmp webserver endpoint. Curling this address will downloa
 
 ## Interval crash upload
 
-Use esp_err_t esp_crash_upload_timer_init() to enable a 60s interval timer, that will try to find an existing core dump, and upload if possible. On success, the coredump partition will be erased.
+Use 
+```
+esp_err_t esp_crash_upload_timer_init()
+```
+to enable a 60s interval timer, that will try to find an existing core dump, and upload if possible. On success, the coredump partition will be erased.
 
 ## Uploading build files
 
