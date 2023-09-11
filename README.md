@@ -67,7 +67,7 @@ curl “https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&
 Ensure $VERSION matches the same PROJECT_VER in your build. This command can easily be added to your CI system.
 
 ### CLI commands
-``
+```
 coredump_crash
   Crash the esp32
 
@@ -79,7 +79,7 @@ coredump_upload  [-e] [url] [filename]
            url  Url to send to
       filename  Filename
    -e, --erase  Erase after successful upload
-``
+```
 
 ## Example Output
 
