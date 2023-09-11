@@ -10,6 +10,17 @@ This example is tied to esp-crash, which can be found at https://esp-crash.wennl
 
 This example uses a coredump partition, named coredump. The built-in crash-handler will write a crash to this partition if you enable CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y in your sdkconfig.
 
+To add a coredump partition to your esp-idf partition.csv file, you can use the following example:
+
+```
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+phy_init, data, phy,     0xe000,  0x2000,
+factory,  app,  factory, 0x10000, 1M,
+coredump, data, coredump, ,       128K,
+```
+This will create a 64K coredump partition. If you have a lot of tasks, you need to increase the size to fit all data.
+
 Before you can see your uploaded crashes, you need to access https://esp-crash.wennlund.nu/ with your GitHub account, and register a new unique PROJECT_NAME. After you have registered it, you can add additional team members who can also examine the crashes.
 
 ## ESP-Crash Identifier
