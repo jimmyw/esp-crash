@@ -60,5 +60,6 @@ static void periodic_timer_callback(void *arg)
     if (res == 0) {
         ESP_LOGI(TAG, "Successful upload, erasing coredump");
         esp_crash_erase_coredump();
+        esp_timer_delete(periodic_timer_handle);
     }
 }
