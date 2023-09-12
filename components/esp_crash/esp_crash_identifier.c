@@ -9,8 +9,6 @@
 #include "esp_mac.h"
 #include "esp_system.h"
 
-uint64_t bswap64(uint64_t a);
-
 // -----------------------------------------------------------------------------
 //                              Macros and Typedefs
 // -----------------------------------------------------------------------------
@@ -40,12 +38,20 @@ static const char *TAG = "esp_crash_identifier";
 // OUR WAY TO FETCH AN UNIQUE IDENTIFIER FOR THIS SYSTEM
 const char *esp_crash_identifier_device_id()
 {
-    static char device_id[14];
+#if CONFIG_SOC_IEEE802154_SUPPORTED
+    static char device_id[2 * 8 + 1]; // 64-bit MAC
+#else
+    static char device_id[2 * 6 + 1]; // 48-bit MAC
+#endif
+
     if (!device_id[0]) {
         uint64_t chipmacid = 0LL;
         esp_efuse_mac_get_default((uint8_t *)(&chipmacid));
-        snprintf(device_id, sizeof(device_id), "%" PRIu64, bswap64(chipmacid));
-        device_id[12] = '\0';
+#if CONFIG_SOC_IEEE802154_SUPPORTED
+        snprintf(device_id, sizeof(device_id), "%.16" PRIx64, bswap64(chipmacid));
+#else
+        snprintf(device_id, sizeof(device_id), "%.12" PRIx64, bswap64(chipmacid));
+#endif
     }
     return device_id;
 }
