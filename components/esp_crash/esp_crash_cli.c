@@ -79,8 +79,8 @@ static int cmd_upload(int argc, char **argv)
         arg_print_errors(stderr, upload_args.end, argv[0]);
         return 1;
     }
-    const char *url = upload_args.url->count > 0 ? upload_args.url->sval[0] : "https://esp-crash.wennlund.nu/dump";
-    const char *filename = upload_args.filename->count > 0 ? upload_args.filename->sval[0] : "dump.dmp";
+    const char *url = upload_args.url->count > 0 ? upload_args.url->sval[0] : CONFIG_ESP_CRASH_DEFAULT_URL;
+    const char *filename = upload_args.filename->count > 0 ? upload_args.filename->sval[0] : CONFIG_ESP_CRASH_DEFAULT_FILENAME;
     int res = upload_coredump(url, filename);
 
     if (upload_args.erase->count > 0 && res == 0) {
