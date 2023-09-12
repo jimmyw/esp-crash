@@ -55,7 +55,6 @@ esp_err_t esp_crash_erase_coredump()
 
 esp_err_t upload_coredump(const char *url, const char *filename)
 {
-
     size_t out_size = 0;
     size_t out_addr = 0;
     esp_err_t ret = esp_core_dump_image_get(&out_addr, &out_size);
@@ -67,8 +66,6 @@ esp_err_t upload_coredump(const char *url, const char *filename)
     const uint32_t *data;
     spi_flash_mmap_handle_t handle;
 
-    // ret = spi_flash_mmap(out_addr, out_size, SPI_FLASH_MMAP_DATA, (const void **)&data, &handle);
-
     const esp_partition_t *core_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, NULL);
 
     if (!core_part) {
@@ -78,15 +75,17 @@ esp_err_t upload_coredump(const char *url, const char *filename)
 
     ret = esp_partition_mmap(core_part, 0, out_size, SPI_FLASH_MMAP_DATA, (const void **)&data, &handle);
 
-    ESP_LOGE(TAG, "mmap res: %s", esp_err_to_name(ret));
-
-    if (ret != ESP_OK)
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "mmap res: %s", esp_err_to_name(ret));
         return ret;
+    }
 
     ret = esp_crash_http_post(url, filename, (const char *)data, (int)out_size);
 
     spi_flash_munmap(handle);
-    ESP_LOGE(TAG, "http res: %s", esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "http res: %s", esp_err_to_name(ret));
+    }
     return ret;
 }
 

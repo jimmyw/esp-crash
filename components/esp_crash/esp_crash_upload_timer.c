@@ -39,6 +39,10 @@ static esp_timer_handle_t periodic_timer_handle = NULL;
 
 esp_err_t esp_crash_upload_timer_init()
 {
+    if (!esp_crash_coredump_available()) {
+        return ESP_OK;
+    }
+
     // Handle coredump upload timer.
     const esp_timer_create_args_t periodic_coredump_check = {.callback = &periodic_timer_callback,
                                                              /* name is optional, but may help identify the timer when debugging */
@@ -55,10 +59,11 @@ esp_err_t esp_crash_upload_timer_init()
 static void periodic_timer_callback(void *arg)
 {
     ESP_LOGD(TAG, "Upload coredump timer...");
-    int res = upload_coredump("https://esp-crash.wennlund.nu/dump", "core.dmp");
+    int res = upload_coredump(CONFIG_ESP_CRASH_DEFAULT_URL, CONFIG_ESP_CRASH_DEFAULT_FILENAME);
 
     if (res == 0) {
         ESP_LOGI(TAG, "Successful upload, erasing coredump");
         esp_crash_erase_coredump();
+        esp_timer_delete(periodic_timer_handle);
     }
 }

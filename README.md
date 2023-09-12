@@ -69,7 +69,7 @@ to enable a 60s interval timer, that will try to find an existing core dump, and
 To be able to examine your crashes, you also need to upload the elf binary, with debugging symbols. This can be done with this one-liner:
 
 ```
-curl “https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&project_ver=$VERSION” -F file=build/esp-crash-example.elf
+curl "https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&project_ver=$VERSION" -F file=@build/esp-crash-example.elf
 ```
 
 Ensure $VERSION matches the same PROJECT_VER in your build. This command can easily be added to your CI system.

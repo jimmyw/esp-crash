@@ -1,8 +1,3 @@
-
-message(STATUS "[MAIN] Project name: " ${PROJECT_NAME})
-message(STATUS "[MAIN] Project version: " ${PROJECT_VER})
-
-
 idf_component_register(
     SRCS
         esp_crash.c
@@ -25,4 +20,11 @@ idf_component_register(
         spi_flash
 )
 
-target_compile_options(${COMPONENT_LIB} PRIVATE "-DPROJECT_NAME=\"esp-crash-example\"" "-DPROJECT_VER=\"${PROJECT_VER}\"")
+idf_build_get_property(project_ver PROJECT_VER)
+idf_build_get_property(project_name PROJECT_NAME)
+
+set_source_files_properties(
+    SOURCE "esp_crash_identifier.c"
+    PROPERTIES COMPILE_DEFINITIONS
+    "PROJECT_VER=\"${project_ver}\"; PROJECT_NAME=\"${project_name}\""
+)
