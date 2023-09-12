@@ -42,6 +42,8 @@ esp_err_t esp_crash_upload_timer_init()
     if (!esp_crash_coredump_available()) {
         return ESP_OK;
     }
+    ESP_LOGI(TAG, "Coredump available, will upload %s to %s in %u seconds", CONFIG_ESP_CRASH_DEFAULT_FILENAME, CONFIG_ESP_CRASH_DEFAULT_URL,
+             CONFIG_ESP_CRASH_TIMER_PERIOD_S);
 
     // Handle coredump upload timer.
     const esp_timer_create_args_t periodic_coredump_check = {.callback = &periodic_timer_callback,
