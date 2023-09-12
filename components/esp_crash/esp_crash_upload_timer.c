@@ -48,7 +48,7 @@ esp_err_t esp_crash_upload_timer_init()
                                                              /* name is optional, but may help identify the timer when debugging */
                                                              .name = "upload_coredump"};
     ESP_ERROR_CHECK(esp_timer_create(&periodic_coredump_check, &periodic_timer_handle));
-    esp_timer_start_periodic(periodic_timer_handle, 60 * 1000000);
+    esp_timer_start_periodic(periodic_timer_handle, CONFIG_ESP_CRASH_TIMER_PERIOD_S * 1000000ULL);
     return ESP_OK;
 }
 

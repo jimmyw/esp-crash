@@ -6,4 +6,9 @@ menu "ESP Crash"
     config ESP_CRASH_DEFAULT_FILENAME
         string "Default filename for coredump upload"
         default "core.dmp"
+
+    config ESP_CRASH_TIMER_PERIOD_S
+        int "Set upload timer period in seconds"
+        default 60
+        range 1 600
 endmenu
