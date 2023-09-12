@@ -39,6 +39,10 @@ static esp_timer_handle_t periodic_timer_handle = NULL;
 
 esp_err_t esp_crash_upload_timer_init()
 {
+    if (!esp_crash_coredump_available()) {
+        return ESP_OK;
+    }
+
     // Handle coredump upload timer.
     const esp_timer_create_args_t periodic_coredump_check = {.callback = &periodic_timer_callback,
                                                              /* name is optional, but may help identify the timer when debugging */
