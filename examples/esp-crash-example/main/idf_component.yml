@@ -1,0 +1,4 @@
+dependencies:
+  jimmyw/esp-crash:
+    version: "*"
+    override_path: '../../../'
