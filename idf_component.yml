@@ -1,6 +1,6 @@
 description: Framework to collect and upload crashes
 
-version: 0.0.1
+version: 0.0.2
 
 url: https://esp-crash.wennlund.nu
 issues: https://github.com/jimmyw/esp-crash/issues
