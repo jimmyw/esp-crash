@@ -70,6 +70,8 @@ esp_err_t esp_crash_identifier_setup()
 ```
 you can add an identifier to RAM, which will always be included in your crash dump. This identifier is in the format:
 
+Go to https://esp-crash.wennlund.nu/ and register a unique PROJECT_NAME that only you have access to. You can pick anything that is free.
+
 ```
 ESP_CRASH:<PROJECT_NAME>;<PROJECT_VER>;<DEVICE_ID>;
 ```
