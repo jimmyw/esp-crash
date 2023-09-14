@@ -6,7 +6,46 @@
 
 This example is tied to esp-crash, which can be found at https://esp-crash.wennlund.nu/. It is a free service to monitor and display crashes.
 
-## How to use example
+## Using the component
+
+Run the following command in your ESP-IDF project to install this component:
+```bash
+idf.py add-dependency "jimmyw/esp-crash"
+```
+
+## Example
+
+To run the provided example, create it as follows:
+
+```bash
+idf.py create-project-from-example "jimmyw/esp-crash:esp-crash-example"
+```
+
+Then build as usual:
+```bash
+cd esp-crash-example
+idf.py build
+```
+
+And flash it to the board:
+```bash
+idf.py -p PORT flash monitor
+
+coredump_crash
+
+coredump_upload
+```
+
+## License
+
+This component is provided under Apache 2.0 license, see [LICENSE](LICENSE.md) file for details.
+
+## Contributing
+
+Please check [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+
+
+## How to use esp-crash
 
 This example uses a coredump partition, named coredump. The built-in crash-handler will write a crash to this partition if you enable CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y in your sdkconfig.
 
@@ -42,7 +81,7 @@ This is critical for our backend to pick up, just make it available to your regi
 
 ## Uploading coredumps
 
-Use 
+Use
 ```
 esp_err_t upload_coredump(const char *url, const char *filename)
 ```
@@ -50,7 +89,7 @@ to upload the coredump directly from a partition to a server. This will read the
 
 ## Downloading coredumps
 
-Use 
+Use
 ```
 esp_err_t esp_crash_webserver_start(httpd_handle_t handle)
 ```
@@ -58,7 +97,7 @@ to register the /crash.dmp webserver endpoint. Curling this address will downloa
 
 ## Interval crash upload
 
-Use 
+Use
 ```
 esp_err_t esp_crash_upload_timer_init()
 ```
