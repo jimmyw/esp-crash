@@ -1,0 +1,13 @@
+description: Framework to collect and upload crashes
+
+url: https://esp-crash.wennlund.nu
+issues: https://github.com/jimmyw/esp-crash/issues
+documentation: https://github.com/jimmyw/esp-crash/blob/main/README.md
+repository: git@github.com:jimmyw/esp-crash.git
+
+maintainers:
+  - "Jimmy Wennlund <jimmy@wennlund.nu>"
+
+dependencies:
+  # Requires i2c_master_read_from_device added in v4.4
+  idf: ">=4.4.0"
