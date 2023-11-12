@@ -99,6 +99,11 @@ to register the /crash.dmp webserver endpoint. Curling this address will downloa
 
 ```
 curl "https://esp-crash.wennlund.nu/crash" -F file=@crash.dmp
+
+OR compressed
+
+bzip2 -c crash.dmp | curl "https://esp-crash.wennlund.nu/dump" -F file=@-
+
 ```
 
 
@@ -116,6 +121,11 @@ To be able to examine your crashes, you also need to upload the elf binary, with
 
 ```
 curl "https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&project_ver=$VERSION" -F file=@build/esp-crash-example.elf
+
+OR
+
+bzip2 -c build/esp-crash-example.elf | curl "https://esp-crash.wennlund.nu/upload_elf?project_name=esp-crash-example&project_ver=$VERSION" -F file=@-
+
 ```
 
 Ensure $VERSION matches the same PROJECT_VER in your build. This command can easily be added to your CI system.
