@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block title %}{% if project_name %}List of crashes for {{project_name}}{% else %}List latest crashes{% endif %}{%
+endblock %}
+{% block content %}
+<div class="flex">
+    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-4/6">
+        {% if project_name %}List of crashes for <b>{{project_name}}</b>{% else %}List latest crashes{% endif %}
+    </h1>
+
+    {% if project_name %}
+    <a href="/projects/{{ project_name }}/builds" class="flex items-center p-4">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
+        </svg>
+        <span>Builds</span>
+    </a>
+
+
+    <a href="/projects/{{ project_name }}/acl" class="flex items-center p-4">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+        </svg> <span>Access Control</span>
+    </a>
+    {% endif %}
+
+</div>
+
+<div class="w-5/6 relative overflow-x-auto shadow-md sm:rounded-lg">
+    <table class="w-full text-sm text-left text-gray-500">
+        <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+            <tr>
+                <th scope="col" class="px-6 py-3">Timestamp</th>
+                <th scope="col" class="px-6 py-3">Project Name</th>
+                <th scope="col" class="px-6 py-3">Project Version</th>
+                <th scope="col" class="px-6 py-3">Device Id</th>
+                <th scope="col" class="px-6 py-3"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for crash in crashes %}
+            <tr class="bg-white border-b hover:bg-gray-50">
+                <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.date }}</a></td>
+                <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.project_name }}</a></td>
+                <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.project_ver}}</a></td>
+                <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.device_id }}</a></td>
+                <td class="px-6 py-4"><a href="/crash/delete/{{crash.crash_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a></td>
+            </tr>
+
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

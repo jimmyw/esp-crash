@@ -1,0 +1,9 @@
+Flask
+psycopg2
+esp-coredump
+gunicorn
+flask_dance
+SQLAlchemy
+flask-login
+flask-caching
+flask_sqlalchemy

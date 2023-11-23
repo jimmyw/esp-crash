@@ -1,0 +1,50 @@
+{% extends "layout.html" %}
+{% block title %}Builds for {{project_name}}</b>{% endblock %}
+{% block content %}
+<div class="flex">
+    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-4/6">
+        Builds for <b>{{project_name}}</b>
+    </h1>
+
+    {% if project_name %}
+    <a href="/projects/{{ project_name }}" class="flex items-center p-4">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <span>Crashes</span>
+    </a>
+    {% endif %}
+
+</div>
+
+
+<div class="w-5/6 relative overflow-x-auto shadow-md sm:rounded-lg">
+    <table class="w-full text-sm text-left text-gray-500">
+        <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+            <tr>
+                <th scope="col" class="px-6 py-3">Timestamp</th>
+                <th scope="col" class="px-6 py-3">Project Name</th>
+                <th scope="col" class="px-6 py-3">Project Version</th>
+                <th scope="col" class="px-6 py-3">Size</th>
+                <th scope="col" class="px-6 py-3">Crash count</th>
+                <th scope="col" class="px-6 py-3"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for elf in elfs %}
+            <tr class="bg-white border-b hover:bg-gray-50">
+                <td class="px-6 py-4">{{ elf.date }}</td>
+                <td class="px-6 py-4">{{ elf.project_name }}</td>
+                <td class="px-6 py-4">{{ elf.project_ver}}</td>
+                <td class="px-6 py-4">{{ elf.size }}</td>
+                <td class="px-6 py-4">{{ elf.crash_count }}</td>
+                <td class="px-6 py-4"><a href="/elf/delete/{{elf.elf_file_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a></td>
+            </tr>
+        </tbody>
+        {% endfor %}
+    </table>
+</div>
+{% endblock %}
