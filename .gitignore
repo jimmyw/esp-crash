@@ -8,3 +8,6 @@ __pycache__
 *.lock
 managed_components/*
 dependencies.lock
+docker-compose.yml
+data
+db
