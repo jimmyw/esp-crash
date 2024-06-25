@@ -112,9 +112,9 @@ def listProjects():
 def listProject(project_name):
     crashes = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.ext_device_id,
+            crash.crash_id, crash.date, crash.project_name, crash.device_id,
             crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date,
-            device.device_id, device.alias
+            device.ext_device_id, device.alias
         FROM
             crash
         JOIN
@@ -122,7 +122,7 @@ def listProject(project_name):
         LEFT JOIN
             elf_file USING (project_name, project_ver)
         LEFT JOIN
-            device USING (ext_device_id)
+            device USING (device_id)
         WHERE
             crash.project_name = %s AND
             project_auth.github = %s
@@ -298,11 +298,13 @@ def show_crash(crash_id):
     # Fetch crash data from database
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.ext_device_id, crash.project_ver, crash.crash_dmp
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, device.alias
         FROM
             crash
         JOIN
             project_auth USING (project_name)
+        JOIN
+            device USING (device_id)
         WHERE
             crash_id = %s AND project_auth.github = %s
         ORDER BY
