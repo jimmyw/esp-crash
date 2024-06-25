@@ -111,9 +111,9 @@ def listProjects():
 def listProject(project_name):
     crashes = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id,
+            crash.crash_id, crash.date, crash.project_name, crash.device_id as ext_device_id,
             crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date,
-            device.alias
+            device.device_id, device.alias
         FROM
             crash
         JOIN
