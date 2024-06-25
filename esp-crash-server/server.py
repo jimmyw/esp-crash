@@ -2,13 +2,14 @@ import os
 import re
 
 from functools import wraps
-from flask import Flask, app, request, render_template, redirect, url_for, session
+from flask import Flask, app, request, render_template, redirect, url_for, session, send_file
 from flask_dance.contrib.github import make_github_blueprint, github
 from werkzeug.middleware.proxy_fix import ProxyFix
 import psycopg2
 import subprocess
 import tempfile
 import bz2
+import zipfile
 
 
 class DBManager:
@@ -349,6 +350,78 @@ def show_crash(crash_id):
 
     return render_template('crash.html', crash = crash, elf_images = elf_images, dump = dump)
 
+@app.route('/crash/<crash_id>/download')
+@login_required
+def download_crash(crash_id):
+
+    # Fetch crash data from database
+    crash = ldb().get_data("""
+        SELECT
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp
+        FROM
+            crash
+        JOIN
+            project_auth USING (project_name)
+        WHERE
+            crash_id = %s AND project_auth.github = %s
+        ORDER BY
+            date DESC""", (crash_id, session["gh_user"],))
+    # If no crash data is found, return "Not found"
+    if len(crash) != 1:
+        return "Not found", 404
+
+    crash = crash[0]
+
+    # Fetch all elf image data from database that matches this project and version
+    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+
+    zipf = tempfile.NamedTemporaryFile(delete=False)
+    with zipfile.ZipFile(zipf.name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        dmp = tempfile.NamedTemporaryFile(delete=False)
+        # Decompress crash_dmp and elf_file before writing to temp files
+        try:
+            decompressed_crash_dmp = bz2.decompress(crash["crash_dmp"])
+        except IOError:
+            decompressed_crash_dmp = crash["crash_dmp"]
+        dmp.write(decompressed_crash_dmp)
+        dmp.close()
+        zip_file.write(dmp.name,  arcname="crash_{}/crash_{}.dmp".format(crash_id, crash_id))
+        os.unlink(dmp.name)
+
+        for elf_image in elf_images:
+            # Create temporary files to store crash and elf data
+            elf = tempfile.NamedTemporaryFile(delete=False)
+
+            try:
+                decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
+            except IOError:
+                decompressed_elf_file = elf_image["elf_file"]
+
+            # Write decompressed data to temporary files
+            elf.write(decompressed_elf_file)
+            elf.close()
+
+            # Add files to zip
+            zip_file.write(elf.name, arcname="crash_{}/elf_{}.elf".format(crash_id, elf_image["elf_file_id"]))
+
+            os.unlink(elf.name)
+
+            script = tempfile.NamedTemporaryFile(delete=False)
+            script.write("#!/bin/bash\n".encode())
+            script.write(". $ESP_IDF/export.sh\n".encode())
+            script.write("exec esp-coredump dbg_corefile -t raw --core {} {}\n".format("crash_{}.dmp".format(crash_id), "elf_{}.elf".format(elf_image["elf_file_id"])).encode())
+            script.close()
+            zip_file.write(script.name, arcname="crash_{}/elf_{}.sh".format(crash_id, elf_image["elf_file_id"]))
+
+
+
+
+    # Send zip file
+    status = send_file(zipf.name, mimetype='application/zip', as_attachment=True, download_name="crash_{}.zip".format(crash_id))
+    os.unlink(zipf.name)
+    return status
+
+
 @app.route('/crash/delete/<crash_id>')
 @login_required
 def delete_crash(crash_id):
@@ -377,14 +450,15 @@ def dump():
 
     # Try to decompress the file content, if it's already compressed, use as is
     try:
-        bz2.decompress(file_content)
+        decompressed_content = bz2.decompress(file_content)
         compressed_content = file_content
     # If the file content is not compressed, compress it
     except OSError:
+        decompressed_content = file_content
         compressed_content = bz2.compress(file_content)
 
     # Decode the file content
-    decoded_content = file_content.decode('utf-8', errors='ignore')
+    decoded_content = decompressed_content.decode('utf-8', errors='ignore')
 
     # Use regex to find matches for the pattern in the decoded content
     # EXAMPLE LINE: ESP_CRASH:ecu-hub-esp32;1722-a2b84e59-dirty;68b6b341a58c;
@@ -431,25 +505,41 @@ def upload_elf():
 
     # Read the content of the file
     file_content = file.read()
+    project_name = None
+    project_ver = None
+
+    # Try to decompress the file content to check if it is already compressed
+    try:
+        # If it is already compressed, use it as it is
+        uncompressed_content = bz2.decompress(file_content)
+        compressed_content = file_content
+    except IOError:
+        # If it is not compressed, compress the file content using bz2
+        uncompressed_content = file_content
+        compressed_content = bz2.compress(file_content)
+
+    # Decode the file content
+    decoded_content = uncompressed_content.decode('utf-8', errors='ignore')
+
+    # Use regex to find matches for the pattern in the decoded content
+    # EXAMPLE LINE: ESP_CRASH:ecu-hub-esp32;1722-a2b84e59-dirty;68b6b341a58c;
+    # EXAMPLE LINE: ESP_CRASH:test-firmware;1.55;aaa-bbb;
+    pattern = r'ESP_CRASH:(.*?);(.*?);(.*?);'
+    match = re.search(pattern, decoded_content)
+
+    if match:
+        project_name = match.group(1)
+        project_ver = match.group(2)
 
     # Get the project name and version from the request arguments
-    project_name = request.args.get('project_name', None)
-    project_ver = request.args.get('project_ver', None)
+    project_name = request.args.get('project_name', project_name)
+    project_ver = request.args.get('project_ver', project_ver)
 
     # Check if the project name and version are provided
     if not project_name:
         return "Missing project_name", 400
     if not project_ver:
         return "Missing project_ver", 400
-
-    # Try to decompress the file content to check if it is already compressed
-    try:
-        bz2.decompress(file_content)
-        # If it is already compressed, use it as it is
-        compressed_content = file_content
-    except IOError:
-        # If it is not compressed, compress the file content using bz2
-        compressed_content = bz2.compress(file_content)
 
     # Execute the SQL query to insert the compressed file content into the database
     cursor = conn.cursor()
