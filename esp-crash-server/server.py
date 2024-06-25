@@ -112,7 +112,7 @@ def listProjects():
 def listProject(project_name):
     crashes = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id as ext_device_id,
+            crash.crash_id, crash.date, crash.project_name, crash.ext_device_id,
             crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date,
             device.device_id, device.alias
         FROM
@@ -122,7 +122,7 @@ def listProject(project_name):
         LEFT JOIN
             elf_file USING (project_name, project_ver)
         LEFT JOIN
-            device ON (crash.device_id = device.ext_device_id)
+            device USING (ext_device_id)
         WHERE
             crash.project_name = %s AND
             project_auth.github = %s
@@ -136,7 +136,7 @@ def listProject(project_name):
 def listCrashes():
     crashes = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id,
+            crash.crash_id, crash.date, crash.project_name, crash.ext_device_id,
             crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date
         FROM
             crash
@@ -298,7 +298,7 @@ def show_crash(crash_id):
     # Fetch crash data from database
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp
+            crash.crash_id, crash.date, crash.project_name, crash.ext_device_id, crash.project_ver, crash.crash_dmp
         FROM
             crash
         JOIN
@@ -360,7 +360,7 @@ def download_crash(crash_id):
     # Fetch crash data from database
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp
+            crash.crash_id, crash.date, crash.project_name, crash.ext_device_id, crash.project_ver, crash.crash_dmp
         FROM
             crash
         JOIN
@@ -503,7 +503,7 @@ def dump():
 
     # Execute the SQL query to insert the compressed content into the database
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO crash (date, project_name, device_id, project_ver, crash_dmp) VALUES (NOW(), %s, %s, %s, %s)',
+    cursor.execute('INSERT INTO crash (date, project_name, ext_device_id, project_ver, crash_dmp) VALUES (NOW(), %s, %s, %s, %s)',
     (arguments["PROJECT_NAME"], arguments["DEVICE_ID"], arguments["PROJECT_VER"], psycopg2.Binary(compressed_content),))
 
     # Commit the changes and close the connection

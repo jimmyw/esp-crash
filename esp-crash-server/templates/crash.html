@@ -24,7 +24,7 @@
     <span class="w-1/6 text-center">crash size<br /><b>{{ crash.crash_dmp|length }} bytes</b></span>
     <span class="w-1/6 text-center">date<br /><b>{{crash.date.strftime('%Y-%m-%d')}}<br />{{crash.date.strftime('%H:%M:%S')}}</b></span>
     <span class="w-1/6 text-center">project_name<br /><b>{{ crash.project_name }}</b></span>
-    <span class="w-1/6 text-center">device_id<br /><b>{{ crash.device_id }}</b></span>
+    <span class="w-1/6 text-center">device_id<br /><b>{{ crash.ext_device_id }}</b></span>
     <span class="w-1/6 text-center">project_ver<br /><b>{{ crash.project_ver}}</b></span>
     {% for elf_image in elf_images %}
     <span class="w-1/6 text-center">elf_image date<br /><b>{{elf_image.date.strftime('%Y-%m-%d')}}<br />{{elf_image.date.strftime('%H:%M:%S')}}</b></span>
