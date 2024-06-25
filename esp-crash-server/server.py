@@ -112,13 +112,16 @@ def listProject(project_name):
     crashes = ldb().get_data("""
         SELECT
             crash.crash_id, crash.date, crash.project_name, crash.device_id,
-            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date
+            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date,
+            device.alias
         FROM
             crash
         JOIN
             project_auth USING (project_name)
         LEFT JOIN
             elf_file USING (project_name, project_ver)
+        LEFT JOIN
+            device ON (crash.device_id = device.ext_device_id)
         WHERE
             crash.project_name = %s AND
             project_auth.github = %s
