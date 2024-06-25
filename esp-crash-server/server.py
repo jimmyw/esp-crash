@@ -503,6 +503,8 @@ def dump():
 
     # Execute the SQL query to insert the compressed content into the database
     cursor = conn.cursor()
+    cursor.execute('INSERT INTO device (ext_device_id) VALUES (%s) ON CONFLICT (ext_device_id) DO UPDATE SET ext_device_id = EXCLUDED.ext_device_id RETURNING device_id')
+    device_id = cursor.fetchone()[0]
     cursor.execute('INSERT INTO crash (date, project_name, ext_device_id, project_ver, crash_dmp) VALUES (NOW(), %s, %s, %s, %s)',
     (arguments["PROJECT_NAME"], arguments["DEVICE_ID"], arguments["PROJECT_VER"], psycopg2.Binary(compressed_content),))
 
