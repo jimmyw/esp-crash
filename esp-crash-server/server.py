@@ -36,16 +36,15 @@ class DBManager:
         column_names = [desc[0] for desc in cur.description]
         return [dict(zip(column_names, row)) for row in result]
 
-
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(
     app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1
 )
 
-app.secret_key = "ADD_YOUR_SECRET_KEY_HERE"
+app.secret_key = os.environ["APP_SECRET_KEY"]
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1000 * 1000
-app.config["GITHUB_OAUTH_CLIENT_ID"] = "ADD_YOUR_ID_HERE"
-app.config["GITHUB_OAUTH_CLIENT_SECRET"] = "ADD_YOUR_SECRET_HERE"
+app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
+app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
 conn = None
 
 github_bp = make_github_blueprint()
