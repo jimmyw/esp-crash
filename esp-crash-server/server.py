@@ -24,6 +24,7 @@ class DBManager:
         pf.close()
 
     def cursor(self):
+        self.connection.rollback()
         return self.connection.cursor()
 
     def commit(self):
@@ -432,6 +433,24 @@ def delete_crash(crash_id):
     conn.commit()
     return redirect("/", code=302)
 
+
+@app.route('/device/<device_id>')
+@login_required
+def showDevice(device_id):
+    #app.logger.info(device_id)
+    devices = ldb().get_data("""
+        SELECT
+            device_id,
+            ext_device_id,
+            alias
+        FROM
+            device
+        WHERE
+            device_id = %s
+    """, (device_id,))
+    if len(devices) == 1:
+        return render_template('device.html', device = devices[0])
+    return "Device not found", 400
 
 @app.route('/dump', methods = ['POST'])
 def dump():
