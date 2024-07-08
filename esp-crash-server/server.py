@@ -458,6 +458,24 @@ def showDevice(device_id):
         return render_template('device.html', device = devices[0])
     return "Device not found", 400
 
+@app.route('/device/<device_id>', methods = ['POST'])
+@login_required
+def updateDeviceAlias(device_id):
+    # Extract the new alias from the POST data
+    new_alias = request.form.get('alias')
+
+    c = ldb().cursor()
+    res = c.execute("""
+        UPDATE device
+        SET alias = %s
+        WHERE device_id = %s
+        RETURNING device_id
+    """, (new_alias, device_id))
+    conn.commit()
+    print(res)
+    return showDevice(device_id)
+
+
 @app.route('/dump', methods = ['POST'])
 def dump():
     # Connect to the database
@@ -509,10 +527,10 @@ def dump():
 
     # Execute the SQL query to insert the compressed content into the database
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO device (ext_device_id) VALUES (%s) ON CONFLICT (ext_device_id) DO UPDATE SET ext_device_id = EXCLUDED.ext_device_id RETURNING device_id')
+    cursor.execute('INSERT INTO device (ext_device_id) VALUES (%s) ON CONFLICT (ext_device_id) DO UPDATE SET ext_device_id = EXCLUDED.ext_device_id RETURNING device_id', (arguments["DEVICE_ID"],))
     device_id = cursor.fetchone()[0]
-    cursor.execute('INSERT INTO crash (date, project_name, ext_device_id, project_ver, crash_dmp, device_id) VALUES (NOW(), %s, %s, %s, %s, %s)',
-    (arguments["PROJECT_NAME"], arguments["DEVICE_ID"], arguments["PROJECT_VER"], psycopg2.Binary(compressed_content), device_id))
+    cursor.execute('INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id) VALUES (NOW(), %s, %s, %s, %s)',
+    (arguments["PROJECT_NAME"], arguments["PROJECT_VER"], psycopg2.Binary(compressed_content), device_id))
 
     # Commit the changes and close the connection
     conn.commit()
