@@ -3,20 +3,45 @@
 {% block content %}
 
 <div class="flex">
-    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-4/6">
+    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-3/6">
         Here is your crash
     </h1>
+    <div class="w-2/6 flex flex-wrap justify-end items-center">
+    <a href="/device/{{ crash.device_id }}" class="flex items-center p-4 ">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <rect x="5" y="3" width="14" height="18" rx="2" ry="2"></rect>
+            <line x1="12" y1="2" x2="12" y2="22"></line>
+            <line x1="18" y1="5" x2="18" y2="5.01"></line>
+            <line x1="6" y1="5" x2="6" y2="5.01"></line>
+        </svg>
+        <span>Device</span>
+    </a>
 
+    <a href="/crash/{{ crash.crash_id }}/download" class="flex items-center p-4 ">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-3-4l-3 3m0 0l-3-3m3 3V4" />
+        </svg>
+        <span>Download</span>
+    </a>
+    {% for elf_image in elf_images %}
+    <a href="/build/{{ elf_image.elf_file_id }}/build" class="flex items-center p-4 ">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 2a1 1 0 01.993.883L11 3v1.062a5.98 5.98 0 012.662.913l.75-.75a1 1 0 011.414 0l1.414 1.414a1 1 0 010 1.414l-.75.75a5.98 5.98 0 01.913 2.662H17a1 1 0 01.117 1.993L17 11h-1.062a5.98 5.98 0 01-.913 2.662l.75.75a1 1 0 010 1.414l-1.414 1.414a1 1 0 01-1.414 0l-.75-.75a5.98 5.98 0 01-2.662.913V17a1 1 0 01-1.993.117L9 17v-1.062a5.98 5.98 0 01-2.662-.913l-.75.75a1 1 0 01-1.414 0L2.76 14.433a1 1 0 010-1.414l.75-.75a5.98 5.98 0 01-.913-2.662H3a1 1 0 01.117-1.993L3 9h1.062a5.98 5.98 0 01.913-2.662l-.75-.75a1 1 0 010-1.414L4.636 3.636a1 1 0 011.414 0l.75.75A5.98 5.98 0 019 3.062V3a1 1 0 011-1zm0 4a4 4 0 100 8 4 4 0 000-8z" clip-rule="evenodd" />
+        </svg>
+        <span>Build</span>
+    </a>
+    {% endfor %}
     {% if crash.project_name %}
-    <a href="/projects/{{ crash.project_name }}" class="flex items-center p-4">
+    <a href="/projects/{{ crash.project_name }}" class="flex items-center p-4 ">
         <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
             stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
-        <span>Crashes</span>
+        <span>Project</span>
     </a>
     {% endif %}
+</div>
 
 </div>
 <div class="w-5/6 p-8 bg-white border border-gray-200 rounded-lg shadow mt-4">
