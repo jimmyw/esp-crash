@@ -27,6 +27,7 @@
                 <th scope="col" class="px-6 py-3">Timestamp</th>
                 <th scope="col" class="px-6 py-3">Project Name</th>
                 <th scope="col" class="px-6 py-3">Project Version</th>
+                <th scope="col" class="px-6 py-3">Alias</th>
                 <th scope="col" class="px-6 py-3">Size</th>
                 <th scope="col" class="px-6 py-3">Crash count</th>
                 <th scope="col" class="px-6 py-3"></th>
@@ -38,9 +39,11 @@
                 <td class="px-6 py-4">{{ elf.date }}</td>
                 <td class="px-6 py-4">{{ elf.project_name }}</td>
                 <td class="px-6 py-4">{{ elf.project_ver}}</td>
+                <td class="px-6 py-4">{{ elf.project_alias or ""}}</td>
                 <td class="px-6 py-4">{{ elf.size }}</td>
                 <td class="px-6 py-4">{{ elf.crash_count }}</td>
-                <td class="px-6 py-4"><a href="/elf/delete/{{elf.elf_file_id}}"
+                <td class="px-6 py-4"><a href="/build/{{elf.elf_file_id}}"
+                    class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Edit</a> <a href="/elf/delete/{{elf.elf_file_id}}"
                         class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a></td>
             </tr>
         </tbody>

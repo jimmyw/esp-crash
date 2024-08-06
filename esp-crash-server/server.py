@@ -111,9 +111,10 @@ def listProjects():
 @login_required
 def listProject(project_name):
     crashes = ldb().get_data("""
-        SELECT
+
+        SELECT DISTINCT ON (crash.date, crash.crash_id)
             crash.crash_id, crash.date, crash.project_name, crash.device_id,
-            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date,
+            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date, elf_file.project_alias,
             device.ext_device_id, device.alias
         FROM
             crash
@@ -127,7 +128,7 @@ def listProject(project_name):
             crash.project_name = %s AND
             project_auth.github = %s
         ORDER BY
-            crash.date DESC
+            crash.date DESC, crash.crash_id
     """, (project_name, session["gh_user"],))
     return render_template('project.html', crashes = crashes, project_name = project_name)
 
@@ -137,7 +138,7 @@ def listCrashes():
     crashes = ldb().get_data("""
         SELECT
             crash.crash_id, crash.date, crash.project_name, device.ext_device_id,
-            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date
+            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date, elf_file.project_alias as build_alias
         FROM
             crash
         JOIN
@@ -195,6 +196,7 @@ def listBuilds(project_name):
             elf_file.date,
             elf_file.project_name,
             elf_file.project_ver,
+            elf_file.project_alias,
             length(elf_file.elf_file) AS size,
             (SELECT COUNT(crash_id) FROM crash WHERE crash.project_name = elf_file.project_name AND crash.project_ver = elf_file.project_ver) AS crash_count
         FROM
@@ -458,6 +460,25 @@ def showDevice(device_id):
         return render_template('device.html', device = devices[0])
     return "Device not found", 400
 
+@app.route('/build/<build_id>')
+@login_required
+def showBuild(build_id):
+    #app.logger.info(build_id)
+    builds = ldb().get_data("""
+        SELECT
+            elf_file_id as build_id,
+            project_name as build_name,
+            project_ver as build_ver,
+            project_alias as build_alias
+        FROM
+            elf_file
+        WHERE
+            elf_file_id = %s
+    """, (build_id,))
+    if len(builds) == 1:
+        return render_template('build.html', build = builds[0])
+    return "Build not found", 400
+
 @app.route('/device/<device_id>', methods = ['POST'])
 @login_required
 def updateDeviceAlias(device_id):
@@ -475,6 +496,22 @@ def updateDeviceAlias(device_id):
     print(res)
     return showDevice(device_id)
 
+@app.route('/build/<build_id>', methods = ['POST'])
+@login_required
+def updateBuildAlias(build_id):
+    # Extract the new alias from the POST data
+    new_alias = request.form.get('alias')
+
+    c = ldb().cursor()
+    res = c.execute("""
+        UPDATE elf_file
+        SET project_alias = %s
+        WHERE elf_file_id = %s
+        RETURNING elf_file_id
+    """, (new_alias, build_id))
+    conn.commit()
+    print(res)
+    return showBuild(build_id)
 
 @app.route('/dump', methods = ['POST'])
 def dump():

@@ -45,7 +45,11 @@ endblock %}
             <tr class="bg-white border-b hover:bg-gray-50">
                 <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.date }}</a></td>
                 <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.project_name }}</a></td>
+                {% if crash.project_alias %}
+                <td class="px-6 py-4"><a href="/build/{{crash.elf_file_id}}">{{ crash.project_alias}} ({{ crash.project_ver}})</a></td>
+                {% else %}
                 <td class="px-6 py-4"><a href="/build/{{crash.elf_file_id}}">{{ crash.project_ver}}</a></td>
+                {% endif %}
                 {% if crash.alias %}
                 <td class="px-6 py-4"><a href="/device/{{crash.device_id}}">{{ crash.alias }} ({{ crash.ext_device_id }})</a></td>
                 {% else %}

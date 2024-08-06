@@ -9,7 +9,7 @@
     <form action="/device/{{device.device_id}}" method="POST">
         <label for="deviceAlias" class="text-lg">Device Alias</label>
         <input type="hidden" name="device_id" value="{{device.device_id}}">
-        <input type="text" name="alias" placeholder="Enter new alias" class="p-2 border-2 border-gray-300 rounded-md" value="{{device.alias}}">
+        <input type="text" name="alias" placeholder="Enter new alias" class="p-2 border-2 border-gray-300 rounded-md" value="{{device.alias or ""}}">
         <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">
             Save
         </button>
