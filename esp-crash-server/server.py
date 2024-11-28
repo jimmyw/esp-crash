@@ -393,8 +393,7 @@ def cron():
         """)
     # If no crash data is found, return "Not found"
     if len(crashes) < 1:
-        print ("No crashes found")
-        return "Not found", 404
+        return "Nothing to do\n", 200
 
     app.logger.info("Processing {} crashes".format(len(crashes)))
     for crash in crashes:
@@ -444,7 +443,7 @@ def cron():
         app.logger.info("Updated crash {}".format(crash["crash_id"]))
 
     # return just a 200 OK
-    return "OK", 200
+    return "OK\n", 200
 
 
 @app.route('/crash/<crash_id>/download')
