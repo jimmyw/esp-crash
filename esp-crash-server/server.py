@@ -327,7 +327,7 @@ def show_crash(crash_id):
     # Fetch crash data from database
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, device.alias
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias
         FROM
             crash
         JOIN
@@ -345,7 +345,7 @@ def show_crash(crash_id):
     crash = crash[0]
 
     # Fetch all elf image data from database that matches this project and version
-    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
 
     dump = ""
     if len(elf_images) < 1:

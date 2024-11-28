@@ -52,10 +52,10 @@
     {% if crash.alias %}
     <span class="w-1/6 text-center">device_id<br /><b><a href="/device/{{ crash.device_id }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a></b></span>
     {% else %}
-    <span class="w-1/6 text-center">device_id<br /><b><a href="/device/{{ crash.device_id }}">{{ crash.ext_device_id }}</a></b></span>
+    <span class="w-1/6 text-center">device_id<br /><b><a href="/device/{{ crash.device_id }}">{{ crash.ext_device_id }}<br />{{ crash.device_alias}} </a></b></span>
     {% endif %}
     {% for elf_image in elf_images %}
-    <span class="w-1/6 text-center">project_ver<br /><b><a href="/build/{{ elf_image.elf_file_id }}">{{ crash.project_ver}}</a></b></span>
+    <span class="w-1/6 text-center">project_ver<br /><b><a href="/build/{{ elf_image.elf_file_id }}">{{ crash.project_ver}}<br />{{ elf_image.project_alias }}</a></b></span>
     <span class="w-1/6 text-center">elf_image date<br /><b><a href="/build/{{ elf_image.elf_file_id }}">{{elf_image.date.strftime('%Y-%m-%d')}}<br />{{elf_image.date.strftime('%H:%M:%S')}}</a></b></span>
     <span class="w-1/6 text-center">elf size<br /><b><a href="/build/{{ elf_image.elf_file_id }}">{{ (elf_image.elf_file|length / 1024)|round|int }} kb</a></b></span>
     {% endfor %}
