@@ -151,6 +151,14 @@ def listProject(project_name):
 @app.route('/crash')
 @login_required
 def listCrashes():
+    search = request.args.get('search', '')
+
+    freetext_part = ""
+    args = (session["gh_user"],)
+    if len(search) > 0:
+        freetext_part = " AND textsearch @@ to_tsquery(%s)"
+        args = (session["gh_user"], search,)
+
     crashes = ldb().get_data("""
         SELECT
             crash.crash_id, crash.date, crash.project_name, device.ext_device_id,
@@ -165,10 +173,11 @@ def listCrashes():
             device USING (device_id)
         WHERE
             project_auth.github = %s
+        """ + freetext_part + """
         ORDER BY
             crash.date DESC
-    """, (session["gh_user"],))
-    return render_template('project.html', crashes = crashes, )
+    """, args)
+    return render_template('project.html', crashes = crashes, search = search,)
 
 
 
@@ -388,7 +397,7 @@ def cron():
         WHERE
             dump IS NULL
         ORDER BY
-            crash.crash_id ASC
+            crash.crash_id DESC
         LIMIT 10
         """)
     # If no crash data is found, return "Not found"
