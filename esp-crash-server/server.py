@@ -110,6 +110,14 @@ def listProjects():
 @app.route('/projects/<project_name>')
 @login_required
 def listProject(project_name):
+    search = request.args.get('search', '')
+
+    freetext_part = ""
+    args = (project_name, session["gh_user"],)
+    if len(search) > 0:
+        freetext_part = " AND textsearch @@ to_tsquery(%s)"
+        args = (project_name, session["gh_user"], search,)
+
     crashes = ldb().get_data("""
 
         SELECT DISTINCT ON (crash.date, crash.crash_id)
@@ -127,10 +135,11 @@ def listProject(project_name):
         WHERE
             crash.project_name = %s AND
             project_auth.github = %s
+        """ + freetext_part + """
         ORDER BY
             crash.date DESC, crash.crash_id
-    """, (project_name, session["gh_user"],))
-    return render_template('project.html', crashes = crashes, project_name = project_name)
+    """, args)
+    return render_template('project.html', crashes = crashes, project_name = project_name, search = search)
 
 @app.route('/crash')
 @login_required

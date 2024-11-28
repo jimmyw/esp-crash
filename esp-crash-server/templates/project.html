@@ -3,9 +3,14 @@
 endblock %}
 {% block content %}
 <div class="flex">
-    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-4/6">
+    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-3/6">
         {% if project_name %}List of crashes for <b>{{project_name}}</b>{% else %}List latest crashes{% endif %}
+
     </h1>
+    <form actions="/search" method="GET" class="flex items-center">
+        <input type="text" name="search" value="{{search}}" placeholder="Search for crashes" class="p-2 border-2 border-gray-300 rounded-md">
+        <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">Search</button>
+    </form>
 
     {% if project_name %}
     <a href="/projects/{{ project_name }}/builds" class="flex items-center p-4">
