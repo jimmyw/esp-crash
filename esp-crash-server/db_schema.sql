@@ -1,6 +1,6 @@
 DROP TABLE crash;
 CREATE TABLE device (device_id SERIAL PRIMARY KEY, ext_device_id TEXT UNIQUE, alias TEXT);
-CREATE TABLE crash (crash_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, crash_dmp BYTEA, device_id INTEGER, textsearch tsvector REFERENCES device(device_id) NOT NULL);
+CREATE TABLE crash (crash_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, crash_dmp BYTEA, device_id INTEGER, textsearch TSVECTOR, dump TEXT REFERENCES device(device_id) NOT NULL);
 CREATE TABLE elf_file (elf_file_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, elf_file BYTEA, project_alias TEXT);
 CREATE TABLE project_auth (project_auth_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, github TEXT);
 
@@ -29,6 +29,7 @@ BEGIN
         coalesce(NEW.device_id::TEXT, '') || ' ' ||
         coalesce(NEW.project_name, '') || ' ' ||
         coalesce(NEW.project_ver, '') || ' ' ||
+        coalesce(NEW.dump, '') || ' ' ||
         coalesce(project_alias, ''));
     RETURN NEW;
 END;

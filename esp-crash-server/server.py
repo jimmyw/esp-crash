@@ -37,6 +37,13 @@ class DBManager:
         column_names = [desc[0] for desc in cur.description]
         return [dict(zip(column_names, row)) for row in result]
 
+def get_data(cur, *args):
+    cur.execute(*args)
+    result = cur.fetchall()
+    column_names = [desc[0] for desc in cur.description]
+    return [dict(zip(column_names, row)) for row in result]
+
+
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(
     app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1
@@ -367,6 +374,78 @@ def show_crash(crash_id):
 
 
     return render_template('crash.html', crash = crash, elf_images = elf_images, dump = dump)
+
+@app.route('/cron')
+def cron():
+
+    c = ldb().cursor()
+    # Fetch all crashes from database that has not been processed
+    crashes = ldb().get_data("""
+        SELECT
+            crash.crash_id, crash.date, crash.project_name, crash.project_ver, crash.crash_dmp
+        FROM
+            crash
+        WHERE
+            dump IS NULL
+        ORDER BY
+            crash.crash_id ASC
+        LIMIT 10
+        """)
+    # If no crash data is found, return "Not found"
+    if len(crashes) < 1:
+        print ("No crashes found")
+        return "Not found", 404
+
+    app.logger.info("Processing {} crashes".format(len(crashes)))
+    for crash in crashes:
+
+
+        # Fetch all elf image data from database that matches this project and version
+        elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+
+        dump = ""
+        if len(elf_images) < 1:
+            dump = "No elf_file found"
+
+        for elf_image in elf_images:
+            # Create temporary files to store crash and elf data
+            dmp = tempfile.NamedTemporaryFile(delete=False)
+            elf = tempfile.NamedTemporaryFile(delete=False)
+
+            # Decompress crash_dmp and elf_file before writing to temp files
+            try:
+                decompressed_crash_dmp = bz2.decompress(crash["crash_dmp"])
+            except IOError:
+                decompressed_crash_dmp = crash["crash_dmp"]
+            try:
+                decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
+            except IOError:
+                decompressed_elf_file = elf_image["elf_file"]
+
+            # Write decompressed data to temporary files
+            dmp.write(decompressed_crash_dmp)
+            dmp.close()
+            elf.write(decompressed_elf_file)
+            elf.close()
+
+            # Run esp-coredump to get crash dump info
+            p = subprocess.run(["esp-coredump", "--chip", "esp32s3", "info_corefile", "-t", "raw", "-c", dmp.name, elf.name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            d = p.stdout + p.stderr
+            dump += d.decode("utf-8")
+
+            # Delete temporary files
+            os.unlink(dmp.name)
+            os.unlink(elf.name)
+
+        # Update the dump field in the database with the crash dump info
+
+        c.execute("UPDATE crash SET dump = %s WHERE crash_id = %s", (dump, crash["crash_id"],))
+        conn.commit()
+        app.logger.info("Updated crash {}".format(crash["crash_id"]))
+
+    # return just a 200 OK
+    return "OK", 200
+
 
 @app.route('/crash/<crash_id>/download')
 @login_required
