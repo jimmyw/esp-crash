@@ -1,10 +1,10 @@
 {% extends "layout.html" %}
-{% block title %}Here is your crash{% endblock %}
+{% block title %}#{{ crash.crash_id }} {{ crash.project_name }}{% endblock %}
 {% block content %}
 
 <div class="flex">
     <h1 class="mb-3 text-3xl leading-none text-slate-900 w-3/6">
-        Here is your crash
+        Crash report <b>{{ crash.project_name }}</b> <b>#{{ crash.crash_id }}</b>
     </h1>
     <div class="w-2/6 flex flex-wrap justify-end items-center">
     <a href="/device/{{ crash.device_id }}" class="flex items-center p-4 ">
