@@ -116,14 +116,17 @@ def listProjects():
 
 @app.route('/projects/<project_name>')
 @login_required
-def listProject(project_name):
+def listProjectCrashes(project_name):
     search = request.args.get('search', '')
 
-    freetext_part = ""
-    args = (project_name, session["gh_user"],)
+    where_part = "project_auth.github = %s "
+    args = (session["gh_user"],)
+    if project_name:
+        where_part += "AND crash.project_name = %s "
+        args = args + (project_name,)
     if len(search) > 0:
-        freetext_part = " AND textsearch @@ to_tsquery(%s)"
-        args = (project_name, session["gh_user"], search,)
+        where_part += "AND textsearch @@ to_tsquery(%s) "
+        args = args + (search,)
 
     crashes = ldb().get_data("""
 
@@ -140,9 +143,7 @@ def listProject(project_name):
         LEFT JOIN
             device USING (device_id)
         WHERE
-            crash.project_name = %s AND
-            project_auth.github = %s
-        """ + freetext_part + """
+        """ + where_part + """
         ORDER BY
             crash.date DESC, crash.crash_id
     """, args)
@@ -151,35 +152,7 @@ def listProject(project_name):
 @app.route('/crash')
 @login_required
 def listCrashes():
-    search = request.args.get('search', '')
-
-    freetext_part = ""
-    args = (session["gh_user"],)
-    if len(search) > 0:
-        freetext_part = " AND textsearch @@ to_tsquery(%s)"
-        args = (session["gh_user"], search,)
-
-    crashes = ldb().get_data("""
-        SELECT
-            crash.crash_id, crash.date, crash.project_name, device.ext_device_id,
-            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date, elf_file.project_alias as build_alias
-        FROM
-            crash
-        JOIN
-            project_auth USING (project_name)
-        LEFT JOIN
-            elf_file USING (project_name, project_ver)
-        LEFT JOIN
-            device USING (device_id)
-        WHERE
-            project_auth.github = %s
-        """ + freetext_part + """
-        ORDER BY
-            crash.date DESC
-    """, args)
-    return render_template('project.html', crashes = crashes, search = search,)
-
-
+    return listProjectCrashes(None)
 
 @app.route('/projects/create', methods = ['POST'])
 @login_required
