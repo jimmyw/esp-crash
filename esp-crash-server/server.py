@@ -323,11 +323,16 @@ def deleteElf(elf_file_id):
 @app.route('/crash/<crash_id>')
 @login_required
 def show_crash(crash_id):
+    return show_project_crash(None, crash_id)
+
+@app.route('/projects/<project_name>/<crash_id>')
+@login_required
+def show_project_crash(project_name, crash_id):
 
     # Fetch crash data from database
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump
         FROM
             crash
         JOIN
@@ -347,42 +352,7 @@ def show_crash(crash_id):
     # Fetch all elf image data from database that matches this project and version
     elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
 
-    dump = ""
-    if len(elf_images) < 1:
-        dump = "No elf_file found"
-
-    for elf_image in elf_images:
-        # Create temporary files to store crash and elf data
-        dmp = tempfile.NamedTemporaryFile(delete=False)
-        elf = tempfile.NamedTemporaryFile(delete=False)
-
-        # Decompress crash_dmp and elf_file before writing to temp files
-        try:
-            decompressed_crash_dmp = bz2.decompress(crash["crash_dmp"])
-        except IOError:
-            decompressed_crash_dmp = crash["crash_dmp"]
-        try:
-            decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
-        except IOError:
-            decompressed_elf_file = elf_image["elf_file"]
-
-        # Write decompressed data to temporary files
-        dmp.write(decompressed_crash_dmp)
-        dmp.close()
-        elf.write(decompressed_elf_file)
-        elf.close()
-
-        # Run esp-coredump to get crash dump info
-        p = subprocess.run(["esp-coredump", "--chip", "esp32s3", "info_corefile", "-t", "raw", "-c", dmp.name, elf.name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        d = p.stdout + p.stderr
-        dump += d.decode("utf-8")
-
-        # Delete temporary files
-        os.unlink(dmp.name)
-        os.unlink(elf.name)
-
-
-    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = dump)
+    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"])
 
 @app.route('/cron')
 def cron():
