@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import bz2
 import zipfile
-
+import datetime
 
 class DBManager:
     def __init__(self, database='example', host="db", user="root", password_file=None):
@@ -54,6 +54,13 @@ app.config['MAX_CONTENT_LENGTH'] = 64 * 1000 * 1000
 app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
 app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
 conn = None
+
+# Custom filter to format date and remove microseconds
+def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
+    return value.strftime(format)
+
+app.jinja_env.filters['format_datetime'] = format_datetime
+
 
 github_bp = make_github_blueprint()
 app.register_blueprint(github_bp, url_prefix="/login")
@@ -129,11 +136,16 @@ def listProjectCrashes(project_name):
         args = args + (search,)
 
     crashes = ldb().get_data("""
-
-        SELECT DISTINCT ON (crash.date, crash.crash_id)
-            crash.crash_id, crash.date, crash.project_name, crash.device_id,
-            crash.project_ver, elf_file.elf_file_id, elf_file.date as elf_date, elf_file.project_alias,
-            device.ext_device_id, device.alias
+        SELECT
+            crash.crash_id,
+            crash.date,
+            crash.project_name,
+            crash.device_id,
+            crash.project_ver,
+            array_agg(elf_file.elf_file_id) as elf_file_id,
+            array_agg(elf_file.project_alias) as project_alias,
+            device.ext_device_id,
+            device.alias
         FROM
             crash
         JOIN
@@ -144,7 +156,16 @@ def listProjectCrashes(project_name):
             device USING (device_id)
         WHERE
         """ + where_part + """
+        GROUP BY
+            crash.crash_id,
+            crash.date,
+            crash.project_name,
+            crash.device_id,
+            crash.project_ver,
+            device.ext_device_id,
+            device.alias
         ORDER BY
+
             crash.date DESC, crash.crash_id
     """, args)
     return render_template('project.html', crashes = crashes, project_name = project_name, search = search)
