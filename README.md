@@ -98,7 +98,7 @@ esp_err_t esp_crash_webserver_start(httpd_handle_t handle)
 to register the /crash.dmp webserver endpoint. Curling this address will download the last crash if available. After downloading this crash, you can upload it again to "https://esp-crash.wennlund.nu/dump" if you like.
 
 ```
-curl "https://esp-crash.wennlund.nu/crash" -F file=@crash.dmp
+curl "https://esp-crash.wennlund.nu/dump" -F file=@crash.dmp
 
 OR compressed
 
