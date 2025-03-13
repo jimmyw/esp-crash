@@ -371,14 +371,15 @@ def cron():
 
     app.logger.info("Processing {} crashes".format(len(crashes)))
     for crash in crashes:
-
+        app.logger.info("Processing crash {} project_name '{}' date '{}'".format(crash["crash_id"], crash["project_name"], crash["date"]))
 
         # Fetch all elf image data from database that matches this project and version
         elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
 
         dump = ""
         if len(elf_images) < 1:
-            dump = "No elf_file found"
+            app.logger.info("  No elf_file found")
+            continue
 
         for elf_image in elf_images:
             # Create temporary files to store crash and elf data
