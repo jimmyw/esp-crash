@@ -142,7 +142,7 @@ def listProjectCrashes(project_name):
             crash.project_name,
             crash.device_id,
             crash.project_ver,
-            array_agg(elf_file.elf_file_id) as elf_file_id,
+            array_agg(elf_file.elf_file_id) FILTER (WHERE elf_file.elf_file_id IS NOT NULL) as elf_file_id,
             array_agg(elf_file.project_alias) as project_alias,
             device.ext_device_id,
             device.alias

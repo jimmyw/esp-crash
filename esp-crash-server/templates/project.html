@@ -8,7 +8,8 @@ endblock %}
 
     </h1>
     <form actions="/search" method="GET" class="flex items-center">
-        <input type="text" name="search" value="{{search}}" placeholder="Search for crashes" class="p-2 border-2 border-gray-300 rounded-md">
+        <input type="text" name="search" value="{{search}}" placeholder="Search for crashes"
+            class="p-2 border-2 border-gray-300 rounded-md">
         <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">Search</button>
     </form>
 
@@ -54,18 +55,26 @@ endblock %}
                 {% if not project_name %}
                 <td class="px-6 py-4"><a href="/projects/{{ crash.project_name }}">{{ crash.project_name }}</a></td>
                 {% endif %}
-                <td class="px-6 py-4"><a href="?search={{ crash.project_ver }}">{% for project_alias in crash.project_alias %}{% if project_alias %}<b>{{project_alias}}</b> {%endif%}{%endfor%} {{ crash.project_ver}}</a></td>
+                <td class="px-6 py-4"><a href="?search={{ crash.project_ver }}">{% for project_alias in
+                        crash.project_alias %}{% if project_alias %}<b>{{project_alias}}</b> {%endif%}{%endfor%} {{
+                        crash.project_ver}}</a></td>
                 {% if crash.alias %}
-                <td class="px-6 py-4"><a href="?search={{ crash.ext_device_id }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a></td>
+                <td class="px-6 py-4"><a href="?search={{ crash.ext_device_id }}">{{ crash.alias }} ({{
+                        crash.ext_device_id }})</a></td>
                 {% else %}
                 <td class="px-6 py-4"><a href="?search={{ crash.ext_device_id }}">{{ crash.ext_device_id }}</a></td>
                 {% endif %}
                 <td class="px-6 py-4">
-                    <a href="/crash/delete/{{crash.crash_id}}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
-                    <a href="/device/{{crash.device_id}}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>
+                    <a href="/crash/delete/{{crash.crash_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
+                    <a href="/device/{{crash.device_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>
+                    {% if crash.elf_file_id %}
                     {% for elf_file_id in crash.elf_file_id %}
-                    <a href="/build/{{elf_file_id}}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Build</a>
+                    <a href="/build/{{elf_file_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Build</a>
                     {% endfor %}
+                    {% endif %}
                 </td>
             </tr>
 
