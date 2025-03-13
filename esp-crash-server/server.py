@@ -359,7 +359,8 @@ def cron():
         FROM
             crash
         WHERE
-            dump IS NULL
+            dump IS NULL AND
+            (select count(e.elf_file_id) from elf_file as e where e.project_name = crash.project_name and e.project_ver = crash.project_ver) > 0
         ORDER BY
             crash.crash_id DESC
         LIMIT 10
