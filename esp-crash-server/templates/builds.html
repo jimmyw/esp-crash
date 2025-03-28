@@ -19,6 +19,15 @@
 
 </div>
 
+<div>
+    <form action="/upload_elf" method="post" enctype="multipart/form-data" class="flex items-center">
+        <input type="file" name="file" class="p-2 border border-gray-300 rounded-lg">
+        <input type="text" name="project_ver" placeholder="Version" class="p-2 ml-2 border border-gray-300 rounded-lg">
+        <input type="hidden" name="project_name" value="{{ project_name }}">
+        <button type="submit" class="p-2 ml-2 bg-blue-500 text-white rounded-lg">Upload build</button>
+    </form>
+</div>
+
 
 <div class="w-5/6 relative overflow-x-auto shadow-md sm:rounded-lg">
     <table class="w-full text-sm text-left text-gray-500">

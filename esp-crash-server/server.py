@@ -727,7 +727,7 @@ def upload_elf():
     pattern = r'ESP_CRASH:(.*?);(.*?);(.*?);'
     match = re.search(pattern, decoded_content)
 
-    if match:
+    if match and len(match.group(1)) > 2 and len(match.group(2)) > 2:
         project_name = match.group(1)
         project_ver = match.group(2)
 
@@ -735,11 +735,19 @@ def upload_elf():
     project_name = request.args.get('project_name', project_name)
     project_ver = request.args.get('project_ver', project_ver)
 
+    project_name = request.form.get('project_name', project_name)
+    project_ver = request.form.get('project_ver', project_ver)
+
     # Check if the project name and version are provided
     if not project_name:
         return "Missing project_name", 400
     if not project_ver:
         return "Missing project_ver", 400
+
+    app.logger.info("Adding elf file")
+    app.logger.info(f"Project name: '{project_name}'")
+    app.logger.info(f"Project version: '{project_ver}'")
+
 
     # Execute the SQL query to insert the compressed file content into the database
     cursor = conn.cursor()
