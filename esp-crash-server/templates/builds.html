@@ -42,9 +42,14 @@
                 <td class="px-6 py-4">{{ elf.project_alias or ""}}</td>
                 <td class="px-6 py-4">{{ elf.size }}</td>
                 <td class="px-6 py-4">{{ elf.crash_count }}</td>
-                <td class="px-6 py-4"><a href="/build/{{elf.elf_file_id}}"
-                    class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Edit</a> <a href="/elf/delete/{{elf.elf_file_id}}"
-                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a></td>
+                <td class="px-6 py-4">
+                    <a href="/build/{{elf.elf_file_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Edit</a>
+                    <a href="/elf/delete/{{elf.elf_file_id}}"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
+                    <a href="/build/{{elf.elf_file_id}}/download"
+                        class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Download</a>
+                </td>
             </tr>
         </tbody>
         {% endfor %}

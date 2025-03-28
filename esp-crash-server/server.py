@@ -420,6 +420,60 @@ def cron():
     # return just a 200 OK
     return "OK\n", 200
 
+@app.route('/build/<build_id>/download')
+@login_required
+def download_build(build_id):
+
+    # Fetch all elf image data from database that matches this project and version
+    elf_images = ldb().get_data("""
+    SELECT
+        elf_file.elf_file_id, elf_file.date, elf_file.project_name, elf_file.project_ver, elf_file.elf_file
+    FROM
+        elf_file
+    LEFT JOIN
+        project_auth USING (project_name)
+    WHERE
+        elf_file_id = %s AND
+        project_auth.github = %s
+
+    """, (build_id, session["gh_user"],))
+
+    zipf = tempfile.NamedTemporaryFile(delete=False)
+    with zipfile.ZipFile(zipf.name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+
+        for elf_image in elf_images:
+            # Create temporary files to store crash and elf data
+            elf = tempfile.NamedTemporaryFile(delete=False)
+
+            try:
+                decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
+            except IOError:
+                decompressed_elf_file = elf_image["elf_file"]
+
+            # Write decompressed data to temporary files
+            elf.write(decompressed_elf_file)
+            elf.close()
+
+            # Add files to zip
+            zip_file.write(elf.name, arcname="build_{}_{}/elf_{}.elf".format(elf_image["project_name"],elf_image["elf_file_id"], elf_image["elf_file_id"]))
+
+            os.unlink(elf.name)
+
+            script = tempfile.NamedTemporaryFile(delete=False)
+            script.write("#!/bin/bash\n".encode())
+            script.write(". $ESP_IDF/export.sh\n".encode())
+            #script.write("exec esp-coredump dbg_corefile -t raw --core {} {}\n".format("crash_{}.dmp".format(elf_image["elf_file_id"]), "elf_{}.elf".format(elf_image["elf_file_id"])).encode())
+            script.close()
+            zip_file.write(script.name, arcname="build_{}_{}/elf_{}.sh".format(elf_image["project_name"],elf_image["elf_file_id"], elf_image["elf_file_id"]))
+
+
+
+
+    # Send zip file
+    status = send_file(zipf.name, mimetype='application/zip', as_attachment=True, download_name="build_{}_{}.zip".format(elf_image["project_name"],build_id,))
+    os.unlink(zipf.name)
+    return status
+
 
 @app.route('/crash/<crash_id>/download')
 @login_required
