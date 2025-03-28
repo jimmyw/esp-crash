@@ -696,12 +696,12 @@ def upload_elf():
 
     # Check if the file is in the request
     if 'file' not in request.files:
-        return "No file part", 400
+        return "No file part", 500
     file = request.files['file']
 
     # Check if a file has been selected
     if file.filename == '':
-        return "No selected file", 400
+        return "No selected file", 500
 
     # Read the content of the file
     file_content = file.read()
@@ -740,9 +740,9 @@ def upload_elf():
 
     # Check if the project name and version are provided
     if not project_name:
-        return "Missing project_name", 400
+        return "Missing project_name", 500
     if not project_ver:
-        return "Missing project_ver", 400
+        return "Missing project_ver", 500
 
     app.logger.info("Adding elf file")
     app.logger.info(f"Project name: '{project_name}'")
