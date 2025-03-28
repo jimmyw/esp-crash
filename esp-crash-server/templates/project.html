@@ -65,7 +65,7 @@ endblock %}
                 <td class="px-6 py-4"><a href="?search={{ crash.ext_device_id }}">{{ crash.ext_device_id }}</a></td>
                 {% endif %}
                 <td class="px-6 py-4">
-                    <a href="/crash/delete/{{crash.crash_id}}"
+                    <a href="/projects/{{ crash.project_name }}/{{crash.crash_id}}/delete"
                         class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
                     <a href="/device/{{crash.device_id}}"
                         class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>

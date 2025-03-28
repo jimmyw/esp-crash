@@ -549,13 +549,14 @@ def download_crash(crash_id):
     return status
 
 
-@app.route('/crash/delete/<crash_id>')
+@app.route('/projects/<project_name>/<crash_id>/delete')
 @login_required
-def delete_crash(crash_id):
+@login_required
+def delete_crash(project_name, crash_id):
     c = ldb().cursor()
     c.execute("DELETE FROM crash WHERE crash_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (crash_id, session["gh_user"]))
     conn.commit()
-    return redirect("/", code=302)
+    return redirect(f"/projects/{project_name}", code=302)
 
 
 @app.route('/device/<device_id>')
