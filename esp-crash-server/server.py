@@ -11,6 +11,7 @@ import tempfile
 import bz2
 import zipfile
 import datetime
+from ollama import Client
 
 class DBManager:
     def __init__(self, database='example', host="db", user="root", password_file=None):
@@ -54,6 +55,13 @@ app.config['MAX_CONTENT_LENGTH'] = 64 * 1000 * 1000
 app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
 app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
 conn = None
+
+ollama_client = None
+if os.environ.get("OLLAMA_SERVER") is not None:
+    ollama_client = Client(
+        host=os.environ["OLLAMA_SERVER"],
+    )
+
 
 # Custom filter to format date and remove microseconds
 def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
@@ -343,10 +351,29 @@ def show_project_crash(project_name, crash_id):
 
     crash = crash[0]
 
+
+    ollama = None
+
+    if ollama_client:
+        start_from = crash["dump"].find("================== CURRENT THREAD REGISTERS ===================")
+        end_at = crash["dump"].find("==================== THREAD 1")
+
+        string = crash["dump"][start_from:end_at]
+        response = ollama_client.chat(model='DeepSeek-r1', messages=[
+            {
+                'role': 'assistant',
+                'content': "Give me a short less than 100 characters summary of this esp32 device stack trace without any instructions: " + string,
+            },
+        ])
+
+
+        ollama = response.message.content.replace("\n", "<br>")
+        app.logger.info(ollama)
+
     # Fetch all elf image data from database that matches this project and version
     elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
 
-    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"])
+    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"], ollama=ollama)
 
 @app.route('/cron')
 def cron():

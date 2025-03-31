@@ -62,6 +62,16 @@
     </div>
 </div>
 
+{% if ollama %}
+<div
+    class="w-5/6 p-8 m-0 border border-gray-200 rounded-lg shadow mt-4  text-sm overflow-scroll font-mono">
+
+    {{ ollama|safe }}
+
+</div>
+{% endif %}
+
+
 <div
     class="w-5/6 h-5/6 p-8 m-0 border border-gray-200 rounded-lg shadow mt-4 whitespace-pre bg-black text-sm text-white overflow-scroll font-mono">
 
