@@ -7,3 +7,4 @@ SQLAlchemy
 flask-login
 flask-caching
 flask_sqlalchemy
+ollama
