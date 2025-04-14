@@ -124,16 +124,20 @@ def listProjects():
 @app.route('/projects/<project_name>')
 @login_required
 def listProjectCrashes(project_name):
-    search = request.args.get('search', '')
+    search = request.args.get('search', None)
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 50))
+
 
     where_part = "project_auth.github = %s "
     args = (session["gh_user"],)
     if project_name:
         where_part += "AND crash.project_name = %s "
         args = args + (project_name,)
-    if len(search) > 0:
+    if search and len(search) > 0:
         where_part += "AND textsearch @@ to_tsquery(%s) "
         args = args + (search,)
+    args = args + (limit, offset,)
 
     crashes = ldb().get_data("""
         SELECT
@@ -145,7 +149,8 @@ def listProjectCrashes(project_name):
             array_agg(elf_file.elf_file_id) FILTER (WHERE elf_file.elf_file_id IS NOT NULL) as elf_file_id,
             array_agg(elf_file.project_alias) as project_alias,
             device.ext_device_id,
-            device.alias
+            device.alias,
+            count(*) OVER() AS full_count
         FROM
             crash
         JOIN
@@ -165,10 +170,16 @@ def listProjectCrashes(project_name):
             device.ext_device_id,
             device.alias
         ORDER BY
-
             crash.date DESC, crash.crash_id
+        LIMIT
+            %s
+        OFFSET
+            %s
     """, args)
-    return render_template('project.html', crashes = crashes, project_name = project_name, search = search)
+
+
+
+    return render_template('project.html', crashes = crashes, project_name = project_name, search = search or "", limit = limit, offset = offset, full_count = crashes[0]["full_count"] if len(crashes) > 0 else 0)
 
 @app.route('/crash')
 @login_required
