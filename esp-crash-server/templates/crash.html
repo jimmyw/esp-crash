@@ -65,7 +65,7 @@
 <div
     class="w-5/6 h-5/6 p-8 m-0 border border-gray-200 rounded-lg shadow mt-4 whitespace-pre bg-black text-sm text-white overflow-scroll font-mono">
 
-    {{ dump if dump else "Crash is beeing analyzed, please wait ..." }}
+    {{ dump if dump else ("Crash is beeing analyzed, please wait ..." if elf_images else "No build file available.") }}
 
 </div>
 {% endblock %}
