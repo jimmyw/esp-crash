@@ -359,6 +359,30 @@ def show_project_crash(project_name, crash_id):
 
     return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"])
 
+
+@app.route('/projects/<project_name>/<crash_id>/refresh')
+@login_required
+def refresh_crash(project_name, crash_id):
+
+    # Fetch crash data from database
+    refresh = """
+        UPDATE
+            crash
+        SET
+            dump = NULL
+        FROM
+            project_auth
+        WHERE
+            crash.crash_id = %s AND crash.project_name = project_auth.project_name AND project_auth.github = %s
+        """
+
+    c = ldb().cursor()
+    c.execute(refresh, (crash_id, session["gh_user"],))
+    conn.commit()
+
+    return show_project_crash(project_name, crash_id)
+
+
 @app.route('/cron')
 def cron():
 
