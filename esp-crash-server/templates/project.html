@@ -51,7 +51,7 @@ endblock %}
         <tbody>
             {% for crash in crashes %}
             <tr class="bg-white border-b hover:bg-gray-50">
-                <td class="px-6 py-4"><a href="/crash/{{crash.crash_id}}">{{ crash.date | format_datetime }}</a></td>
+                <td class="px-6 py-4"><a href="/projects/{{ crash.project_name }}/{{crash.crash_id}}">{{ crash.date | format_datetime }}</a></td>
                 {% if not project_name %}
                 <td class="px-6 py-4"><a href="/projects/{{ crash.project_name }}">{{ crash.project_name }}</a></td>
                 {% endif %}
