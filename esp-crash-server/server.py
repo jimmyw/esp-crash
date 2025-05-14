@@ -380,7 +380,7 @@ def refresh_crash(project_name, crash_id):
     c.execute(refresh, (crash_id, session["gh_user"],))
     conn.commit()
 
-    return show_project_crash(project_name, crash_id)
+    return redirect(url_for('show_project_crash', project_name=project_name, crash_id=crash_id))
 
 
 @app.route('/cron')
