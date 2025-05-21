@@ -70,4 +70,13 @@
     </a>
 
 </div>
+
+<div class="w-5/6 p-8 bg-white border border-gray-200 rounded-lg shadow mt-4">
+    <h2 class="text-xl font-semibold mb-2">AI Analysis</h2>
+    {% if crash.ai_analysis %}
+        <pre class="whitespace-pre-wrap text-sm font-mono">{{ crash.ai_analysis }}</pre>
+    {% else %}
+        <p>AI analysis not available for this crash, or not yet performed.</p>
+    {% endif %}
+</div>
 {% endblock %}

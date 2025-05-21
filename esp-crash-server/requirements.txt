@@ -8,3 +8,8 @@ flask-login
 flask-caching
 flask_sqlalchemy
 ollama
+
+# For AI Crash Analysis (when a real AI service is integrated):
+# openai==<version>  # Example if using OpenAI
+# google-generativeai==<version>  # Example if using Google Gemini
+# boto3==<version>  # Example if using AWS AI services
