@@ -12,6 +12,22 @@ import bz2
 import zipfile
 import datetime
 
+# Placeholder for AI crash analysis
+# TODO: Replace this with actual AI analysis logic.
+# This would typically involve:
+# 1. Importing necessary libraries (e.g., openai, google.generativeai).
+# 2. Configuring API keys, potentially via environment variables (e.g., OPENAI_API_KEY).
+# 3. Formatting the 'dump_text' as a prompt for the AI model.
+# 4. Making an API call to the AI service.
+# 5. Handling potential errors and rate limits from the API.
+# 6. Parsing the AI's response to extract the analysis.
+def analyze_crash_with_ai(dump_text: str) -> str:
+    """
+    Analyzes the crash dump text using a placeholder AI function.
+    Returns a string with the AI's analysis.
+    """
+    return f"AI analysis of the following crash dump: [{dump_text[:200]}...]"
+
 class DBManager:
     def __init__(self, database='example', host="db", user="root", password_file=None):
         pf = open(password_file, 'r')
@@ -50,6 +66,13 @@ app.wsgi_app = ProxyFix(
 )
 
 app.secret_key = os.environ["APP_SECRET_KEY"]
+
+# TODO: When integrating a real AI service for crash analysis,
+# add environment variable checks here for necessary API keys, e.g.:
+# AI_SERVICE_API_KEY = os.environ.get("AI_SERVICE_API_KEY")
+# if not AI_SERVICE_API_KEY:
+#     app.logger.warning("AI_SERVICE_API_KEY not set. AI analysis will be disabled or use a mock.")
+
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1000 * 1000
 app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
 app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
@@ -337,7 +360,7 @@ def show_project_crash(project_name, crash_id):
     # Fetch crash data from database
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump, crash.ai_analysis
         FROM
             crash
         JOIN
@@ -446,11 +469,13 @@ def cron():
             os.unlink(dmp.name)
             os.unlink(elf.name)
 
-        # Update the dump field in the database with the crash dump info
+        # Perform AI analysis
+        ai_analysis_result = analyze_crash_with_ai(dump)
 
-        c.execute("UPDATE crash SET dump = %s WHERE crash_id = %s", (dump, crash["crash_id"],))
+        # Update the dump and ai_analysis fields in the database
+        c.execute("UPDATE crash SET dump = %s, ai_analysis = %s WHERE crash_id = %s", (dump, ai_analysis_result, crash["crash_id"],))
         conn.commit()
-        app.logger.info("Updated crash {}".format(crash["crash_id"]))
+        app.logger.info("Updated crash {} with AI analysis".format(crash["crash_id"]))
 
     # return just a 200 OK
     return "OK\n", 200
