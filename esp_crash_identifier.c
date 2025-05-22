@@ -23,7 +23,7 @@
 
 // STORE CRASH IDENTIFIER IN RAM, AND MAKE SURE ITS PART OF THE CORE DUMP
 // example: ESP_CRASH ID: 'ESP_CRASH:esp-idf;8e8e8df-dirty;6941729232066;'
-COREDUMP_DRAM_ATTR char crash_identifier[128];
+COREDUMP_DRAM_ATTR char crash_identifier[128] = "ESP_CRASH:" PROJECT_NAME ";" PROJECT_VER ";;";
 
 // -----------------------------------------------------------------------------
 //                                Static Variables
@@ -56,12 +56,22 @@ const char *esp_crash_identifier_device_id()
     return device_id;
 }
 
-esp_err_t esp_crash_identifier_setup()
+esp_err_t esp_crash_identifier_setup_with_device(const char *device_id)
 {
+    if (device_id == NULL) {
+        ESP_LOGE(TAG, "Device ID is NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     // REGISTER A CRASH IDENTIFIER THAT WILL BE PROVIDED IN CRASHES UPLOADED REMOTELY.
-    snprintf(crash_identifier, sizeof(crash_identifier), "ESP_CRASH:%s;%s;%s;", PROJECT_NAME, PROJECT_VER, esp_crash_identifier_device_id());
+    snprintf(crash_identifier, sizeof(crash_identifier), "ESP_CRASH:" PROJECT_NAME ";" PROJECT_VER ";%s;", device_id);
     ESP_LOGI(TAG, "ESP_CRASH ID: '%s'", crash_identifier);
     return ESP_OK;
+}
+
+esp_err_t esp_crash_identifier_setup()
+{
+    return esp_crash_identifier_setup_with_device(esp_crash_identifier_device_id());
 }
 
 // -----------------------------------------------------------------------------
