@@ -1,0 +1,95 @@
+{% extends "layout.html" %}
+{% block title %}Webhooks for {{ project_name }}{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl leading-none text-slate-900">
+        Webhooks for <b>{{ project_name }}</b>
+    </h1>
+    <a href="{{ url_for('listProjectCrashes', project_name=project_name) }}" class="flex items-center p-2 text-blue-600 hover:underline">
+        <svg class="w-5 h-5 mr-1 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <span>Back to Project Crashes</span>
+    </a>
+</div>
+
+<div class="w-5/6 relative overflow-x-auto shadow-md sm:rounded-lg mb-8">
+    <h2 class="text-2xl font-semibold p-4 bg-gray-100 border-b">Existing Webhooks</h2>
+    {% if webhooks %}
+    <table class="w-full text-sm text-left text-gray-500">
+        <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+            <tr>
+                <th scope="col" class="px-6 py-3">Webhook URL</th>
+                <th scope="col" class="px-6 py-3 text-right">Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for webhook in webhooks %}
+            {# Assuming webhook is a tuple (webhook_id, webhook_url) as per server.py #}
+            <tr class="bg-white border-b hover:bg-gray-50">
+                <td class="px-6 py-4">{{ webhook[1] }}</td> {# webhook_url is at index 1 #}
+                <td class="px-6 py-4 text-right">
+                    <form action="{{ url_for('project_webhooks_admin', project_name=project_name) }}" method="post" class="inline">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="webhook_id" value="{{ webhook[0] }}"> {# webhook_id is at index 0 #}
+                        <button type="submit" class="font-medium text-red-600 hover:underline">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="p-4 text-gray-700">No webhooks configured for this project.</p>
+    {% endif %}
+</div>
+
+<div class="max-w-md p-6 bg-white border border-gray-200 rounded-lg shadow">
+    <h2 class="text-2xl font-semibold mb-4">Add New Webhook</h2>
+    <form action="{{ url_for('project_webhooks_admin', project_name=project_name) }}" method="post" class="space-y-4">
+        <input type="hidden" name="action" value="add">
+        <div>
+            <label for="webhook_url" class="block text-sm font-medium text-gray-700 mb-1">Webhook URL:</label>
+            <input type="url" id="webhook_url" name="webhook_url" required
+                   class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+        </div>
+        <div>
+            <button type="submit"
+                    class="w-full px-4 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                Add Webhook
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="w-5/6 mt-12 p-6 bg-white border border-gray-200 rounded-lg shadow">
+    <h2 class="text-2xl font-semibold mb-4 border-b pb-2">Slack Integration Example</h2>
+    
+    <h3 class="text-xl font-semibold mt-4 mb-2"><strong>How to post to a Slack channel:</strong></h3>
+    <ol class="list-decimal list-inside space-y-2 text-gray-700">
+        <li>
+            Create an Incoming Webhook integration in your Slack workspace:
+            <ul class="list-disc list-inside ml-4 mt-1 space-y-1">
+                <li>Go to <code>https://[your-slack-workspace].slack.com/apps/A0F7XDUAZ-incoming-webhooks</code> (or search for "Incoming WebHooks" in the Slack App Directory).</li>
+                <li>Click "Add to Slack".</li>
+                <li>Choose a channel where notifications will be posted and click "Add Incoming WebHooks integration".</li>
+                <li>Copy the 'Webhook URL' provided by Slack (it will look something like <code>https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX</code>).</li>
+            </ul>
+        </li>
+        <li>
+            Paste the copied 'Webhook URL' from Slack into the 'Webhook URL' field above and click 'Add Webhook'.
+        </li>
+        <li>
+            When a new crash report is processed for this project, a notification will be sent to the configured Slack channel.
+        </li>
+    </ol>
+
+    <h3 class="text-xl font-semibold mt-6 mb-2"><strong>Payload details:</strong></h3>
+    <p class="text-gray-700">
+        Slack will receive a JSON payload. By default, Slack will display this as a text message. The payload includes project name, version, crash ID, a snippet of the dump, and a link back to the crash details page here.
+    </p>
+    <p class="mt-2 text-gray-700">
+        For more advanced formatting in Slack (e.g., using blocks or attachments), you might need to use a proxy/service that transforms this server's payload into Slack's desired format, or use a Slack app that can process generic JSON webhooks.
+    </p>
+</div>
+{% endblock %}

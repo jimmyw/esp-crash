@@ -40,3 +40,5 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trigger_update_textsearch
 BEFORE INSERT OR UPDATE ON crash
 FOR EACH ROW EXECUTE FUNCTION update_textsearch();
+
+CREATE TABLE project_webhooks (webhook_id SERIAL PRIMARY KEY, project_name TEXT, webhook_url TEXT);
