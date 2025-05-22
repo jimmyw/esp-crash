@@ -11,6 +11,7 @@ import tempfile
 import bz2
 import zipfile
 import datetime
+import requests
 
 class DBManager:
     def __init__(self, database='example', host="db", user="root", password_file=None):
@@ -317,6 +318,61 @@ def deleteACL(project_name, github):
     conn.commit()
     return redirect(url_for("listACL", project_name = project_name), code=302)
 
+@app.route('/projects/<project_name>/webhooks', methods=['GET', 'POST'])
+@login_required
+def project_webhooks_admin(project_name):
+    db = ldb()
+    cur = db.cursor()
+
+    # Permission check: Ensure user is authorized for this project
+    auth_check = db.get_data("""
+        SELECT project_name FROM project_auth
+        WHERE project_name = %s AND github = %s
+    """, (project_name, session.get("gh_user")))
+    if not auth_check:
+        return "Forbidden: You do not have access to this project's webhooks.", 403
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+
+        if action == 'add':
+            webhook_url = request.form.get('webhook_url')
+            if not webhook_url:
+                # Consider flashing a message here instead of just returning an error
+                return "Webhook URL cannot be empty.", 400
+            
+            # Check if webhook_url already exists for this project
+            cur.execute("SELECT webhook_id FROM project_webhooks WHERE project_name = %s AND webhook_url = %s", (project_name, webhook_url))
+            if cur.fetchone():
+                # Optionally, flash a message: "Webhook URL already exists for this project."
+                pass # Or return some error/message
+            else:
+                cur.execute("""
+                    INSERT INTO project_webhooks (project_name, webhook_url)
+                    VALUES (%s, %s)
+                """, (project_name, webhook_url))
+                db.commit()
+
+        elif action == 'delete':
+            webhook_id = request.form.get('webhook_id')
+            if not webhook_id:
+                return "Webhook ID is required for deletion.", 400
+            
+            # The permission check at the beginning covers project-level access.
+            # Deleting by webhook_id and project_name ensures we only delete from the correct project.
+            cur.execute("""
+                DELETE FROM project_webhooks
+                WHERE webhook_id = %s AND project_name = %s
+            """, (webhook_id, project_name))
+            db.commit()
+        
+        return redirect(url_for('project_webhooks_admin', project_name=project_name))
+
+    # GET request logic
+    cur.execute("SELECT webhook_id, webhook_url FROM project_webhooks WHERE project_name = %s ORDER BY webhook_id", (project_name,))
+    webhooks_list = cur.fetchall()
+    return render_template('webhooks.html', project_name=project_name, webhooks=webhooks_list)
+
 @app.route('/elf/delete/<elf_file_id>')
 @login_required
 def deleteElf(elf_file_id):
@@ -451,6 +507,39 @@ def cron():
         c.execute("UPDATE crash SET dump = %s WHERE crash_id = %s", (dump, crash["crash_id"],))
         conn.commit()
         app.logger.info("Updated crash {}".format(crash["crash_id"]))
+
+        # Send webhooks
+        project_name = crash["project_name"]
+        webhooks = ldb().get_data("SELECT webhook_url FROM project_webhooks WHERE project_name = %s", (project_name,))
+
+        if webhooks:
+            app.logger.info(f"Found {len(webhooks)} webhooks for project {project_name}")
+            with app.app_context(): # Needed for url_for to work outside of a request context
+                details_url = url_for('show_project_crash', project_name=crash["project_name"], crash_id=crash["crash_id"], _external=True)
+            
+            payload = {
+                "project_name": crash["project_name"],
+                "project_ver": crash["project_ver"],
+                "crash_id": crash["crash_id"],
+                "crash_dump_snippet": dump[:500],
+                "details_url": details_url
+            }
+            headers = {
+                'User-Agent': 'ESP-Crash-Webhook-Notifier/1.0',
+                'Content-Type': 'application/json'
+            }
+
+            for webhook in webhooks:
+                webhook_url = webhook["webhook_url"]
+                try:
+                    response = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
+                    response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+                    app.logger.info(f"Successfully sent webhook to {webhook_url} for crash {crash['crash_id']}")
+                except requests.exceptions.RequestException as e:
+                    app.logger.error(f"Failed to send webhook to {webhook_url} for crash {crash['crash_id']}: {e}")
+        else:
+            app.logger.info(f"No webhooks found for project {project_name}")
+
 
     # return just a 200 OK
     return "OK\n", 200
