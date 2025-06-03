@@ -49,11 +49,11 @@ coredump_upload
 
 ## License
 
-This component is provided under Apache 2.0 license, see [LICENSE](LICENSE.md) file for details.
+This component is provided under Apache 2.0 license, see [LICENSE.txt](LICENSE.txt) file for details.
 
 ## Contributing
 
-Please check [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+Please check the repository for contribution guidelines.
 
 
 ## How to use esp-crash
