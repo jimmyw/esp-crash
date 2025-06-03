@@ -61,7 +61,7 @@ esp_err_t esp_crash_cli_init()
         .command = "coredump_upload", .help = "Upload core dump to server", .hint = NULL, .func = &cmd_upload, .argtable = &upload_args};
     ESP_ERROR_CHECK(esp_console_cmd_register(&upload_cmd));
 
-    const esp_console_cmd_t erase_cmd = {.command = "coredump_erase", .help = "Erase cordump partition", .hint = NULL, .func = &cmd_erase};
+    const esp_console_cmd_t erase_cmd = {.command = "coredump_erase", .help = "Erase coredump partition", .hint = NULL, .func = &cmd_erase};
     ESP_ERROR_CHECK(esp_console_cmd_register(&erase_cmd));
 
     return ESP_OK;
