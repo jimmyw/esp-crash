@@ -6,6 +6,17 @@
 
 This example is tied to esp-crash, which can be found at https://esp-crash.wennlund.nu/. It is a free service to monitor and display crashes.
 
+## For Newcomers
+
+If this is your first time here, the repository is organised into three main pieces:
+
+- **Component Library** – the files in the root directory (`esp_crash.c`, `esp_crash_cli.c`, etc.) implement crash handling and upload helpers that you can add to any ESP‑IDF project.
+- **Example Application** – `examples/esp-crash-example` shows how to use the component in a simple project. Building this example is a good way to test that everything works on your board.
+- **Server** – `esp-crash-server` contains a small Flask application for receiving and displaying uploaded crashes. You can run it yourself or use the hosted service linked above.
+
+To explore the project quickly, build and flash the example, trigger a crash with `coredump_crash`, and upload it using `coredump_upload`. Inspect the server code or the hosted instance to see your crash reports.
+
+
 ## Using the component
 
 Run the following command in your ESP-IDF project to install this component:
