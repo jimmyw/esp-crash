@@ -215,7 +215,7 @@ def createProject():
 
         """, (project_name, session["gh_user"]))
     conn.commit()
-    return redirect(url_for("listProject", project_name = project_name), code=302)
+    return redirect(url_for("listProjectCrashes", project_name = project_name), code=302)
 
 @app.route('/projects/<project_name>/builds')
 @login_required
