@@ -248,19 +248,7 @@ def listBuilds(project_name):
 @app.route('/projects/<project_name>/acl')
 @login_required
 def listACL(project_name):
-    acls = ldb().get_data("""
-        SELECT
-            github,
-            date,
-            project_name
-        FROM
-            project_auth
-        WHERE
-            project_name IN (SELECT project_name FROM project_auth WHERE github = %s) AND
-            project_name = %s
-        ORDER BY date DESC
-    """, (session["gh_user"], project_name,))
-    return render_template('acl.html', acls = acls, project_name = project_name)
+    return redirect(url_for('project_settings', project_name=project_name))
 
 @app.route('/projects/<project_name>/acl/create', methods = ['POST'])
 @login_required
@@ -305,7 +293,7 @@ def createACL(project_name):
 
         """, (project_name, github))
     conn.commit()
-    return redirect(url_for("listACL", project_name = project_name), code=302)
+    return redirect(url_for("project_settings", project_name = project_name), code=302)
 
 @app.route('/projects/<project_name>/acl/delete/<github>')
 @login_required
@@ -320,7 +308,33 @@ def deleteACL(project_name, github):
             project_name IN (SELECT project_name FROM project_auth WHERE github = %s)
     """, (github, project_name, session["gh_user"]))
     conn.commit()
-    return redirect(url_for("listACL", project_name = project_name), code=302)
+    return redirect(url_for("project_settings", project_name = project_name), code=302)
+
+
+@app.route('/projects/<project_name>/settings')
+@login_required
+def project_settings(project_name):
+    db = ldb()
+    # Verify user has access to this project
+    allowed = db.get_data("""
+        SELECT project_name FROM project_auth
+        WHERE project_name = %s AND github = %s
+    """, (project_name, session.get("gh_user")))
+    if not allowed:
+        return "Forbidden: You do not have access to this project.", 403
+
+    acls = db.get_data("""
+        SELECT github, date, project_name
+        FROM project_auth
+        WHERE project_name = %s
+        ORDER BY date DESC
+    """, (project_name,))
+
+    cur = db.cursor()
+    cur.execute("SELECT webhook_id, webhook_url FROM project_webhooks WHERE project_name = %s ORDER BY webhook_id", (project_name,))
+    webhooks_list = cur.fetchall()
+
+    return render_template('project_settings.html', project_name=project_name, acls=acls, webhooks=webhooks_list)
 
 @app.route('/projects/<project_name>/webhooks', methods=['GET', 'POST'])
 @login_required
@@ -370,12 +384,10 @@ def project_webhooks_admin(project_name):
             """, (webhook_id, project_name))
             db.commit()
 
-        return redirect(url_for('project_webhooks_admin', project_name=project_name))
+        return redirect(url_for('project_settings', project_name=project_name))
 
     # GET request logic
-    cur.execute("SELECT webhook_id, webhook_url FROM project_webhooks WHERE project_name = %s ORDER BY webhook_id", (project_name,))
-    webhooks_list = cur.fetchall()
-    return render_template('webhooks.html', project_name=project_name, webhooks=webhooks_list)
+    return redirect(url_for('project_settings', project_name=project_name))
 
 @app.route('/elf/delete/<elf_file_id>')
 @login_required
