@@ -2,7 +2,7 @@ import os
 import re
 
 from functools import wraps
-from flask import Flask, app, request, render_template, redirect, url_for, session, send_file
+from flask import Flask, app, request, redirect, url_for, session, send_file
 from flask_dance.contrib.github import make_github_blueprint, github
 from werkzeug.middleware.proxy_fix import ProxyFix
 import psycopg2
@@ -63,6 +63,21 @@ def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
 app.jinja_env.filters['format_datetime'] = format_datetime
 
 
+def render_template(template_name, **context):
+    projects = ldb().get_data("""
+        SELECT
+            project_name,
+            (SELECT COUNT(crash_id) FROM crash WHERE crash.project_name = project_auth.project_name) AS crash_count
+        FROM
+            project_auth
+        WHERE
+            project_auth.github = %s
+        ORDER BY
+            project_name ASC
+    """, (session["gh_user"],))
+    return app.jinja_env.get_template(template_name).render(projects=projects, **context)
+
+
 github_bp = make_github_blueprint()
 app.register_blueprint(github_bp, url_prefix="/login")
 def login_required(f):
@@ -109,18 +124,7 @@ def settings():
 @app.route('/')
 @login_required
 def listProjects():
-    projects = ldb().get_data("""
-        SELECT
-            project_name,
-            (SELECT COUNT(crash_id) FROM crash WHERE crash.project_name = project_auth.project_name) AS crash_count
-        FROM
-            project_auth
-        WHERE
-            project_auth.github = %s
-        ORDER BY
-            project_name ASC
-    """, (session["gh_user"],))
-    return render_template('index.html', projects = projects)
+    return render_template('index.html')
 
 @app.route('/projects/<project_name>')
 @login_required
@@ -340,7 +344,7 @@ def project_webhooks_admin(project_name):
             if not webhook_url:
                 # Consider flashing a message here instead of just returning an error
                 return "Webhook URL cannot be empty.", 400
-            
+
             # Check if webhook_url already exists for this project
             cur.execute("SELECT webhook_id FROM project_webhooks WHERE project_name = %s AND webhook_url = %s", (project_name, webhook_url))
             if cur.fetchone():
@@ -357,7 +361,7 @@ def project_webhooks_admin(project_name):
             webhook_id = request.form.get('webhook_id')
             if not webhook_id:
                 return "Webhook ID is required for deletion.", 400
-            
+
             # The permission check at the beginning covers project-level access.
             # Deleting by webhook_id and project_name ensures we only delete from the correct project.
             cur.execute("""
@@ -365,7 +369,7 @@ def project_webhooks_admin(project_name):
                 WHERE webhook_id = %s AND project_name = %s
             """, (webhook_id, project_name))
             db.commit()
-        
+
         return redirect(url_for('project_webhooks_admin', project_name=project_name))
 
     # GET request logic
@@ -516,7 +520,7 @@ def cron():
             app.logger.info(f"Found {len(webhooks)} webhooks for project {project_name}")
             with app.app_context(): # Needed for url_for to work outside of a request context
                 details_url = url_for('show_project_crash', project_name=crash["project_name"], crash_id=crash["crash_id"], _external=True)
-            
+
             payload = {
                 "project_name": crash["project_name"],
                 "project_ver": crash["project_ver"],
