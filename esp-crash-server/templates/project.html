@@ -7,14 +7,14 @@ endblock %}
         {% if project_name %}List of crashes for <b>{{project_name}}</b>{% else %}List latest crashes{% endif %}
 
     </h1>
-    <form actions="/search" method="GET" class="flex items-center">
+    <form action="{{ url_for(request.endpoint, project_name=project_name) }}" method="GET" class="flex items-center">
         <input type="text" name="search" value="{{search}}" placeholder="Search for crashes"
             class="p-2 border-2 border-gray-300 rounded-md">
         <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">Search</button>
     </form>
 
     {% if project_name %}
-    <a href="/projects/{{ project_name }}/builds" class="flex items-center p-4">
+    <a href="{{ url_for('listBuilds', project_name=project_name) }}" class="flex items-center p-4">
         <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
             stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"

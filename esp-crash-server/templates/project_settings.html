@@ -30,7 +30,7 @@
                 <td class="px-6 py-4">{{ acl.project_name }}</td>
                 <td class="px-6 py-4">{{ acl.github }}</td>
                 <td class="px-6 py-4">{{ acl.date }}</td>
-                <td class="px-6 py-4"><a href="/projects/{{ project_name }}/acl/delete/{{ acl.github }}" class="font-medium text-blue-600 hover:underline">Delete</a></td>
+                <td class="px-6 py-4"><a href="{{ url_for('deleteACL', project_name=project_name, github=acl.github) }}" class="font-medium text-blue-600 hover:underline">Delete</a></td>
             </tr>
             {% endfor %}
         </tbody>
@@ -38,7 +38,7 @@
 </div>
 <div class="max-w-md p-6 bg-white border border-gray-200 rounded-lg shadow mb-12">
     <h2 class="text-2xl font-semibold mb-4">Add new user</h2>
-    <form action="/projects/{{ project_name }}/acl/create" method="post" class="space-y-4">
+    <form action="{{ url_for('createACL', project_name=project_name) }}" method="post" class="space-y-4">
         <label for="github" class="block text-sm font-medium text-gray-700 mb-1">Github Name:</label>
         <input type="text" id="github" name="github" class="w-full p-2 border border-gray-300 rounded-md">
         <input type="submit" value="Submit" class="w-full p-2 bg-blue-500 text-white rounded-md">

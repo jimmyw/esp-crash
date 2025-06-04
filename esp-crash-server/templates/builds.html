@@ -7,7 +7,7 @@
     </h1>
 
     {% if project_name %}
-    <a href="/projects/{{ project_name }}" class="flex items-center p-4">
+    <a href="{{ url_for('listProjectCrashes', project_name=project_name) }}" class="flex items-center p-4">
         <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
             stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -20,7 +20,7 @@
 </div>
 
 <div>
-    <form action="/upload_elf" method="post" enctype="multipart/form-data" class="flex items-center">
+    <form action="{{ url_for('upload_elf') }}" method="post" enctype="multipart/form-data" class="flex items-center">
         <input type="file" name="file" class="p-2 border border-gray-300 rounded-lg">
         <input type="text" name="project_ver" placeholder="Version" class="p-2 ml-2 border border-gray-300 rounded-lg">
         <input type="hidden" name="project_name" value="{{ project_name }}">
@@ -52,11 +52,11 @@
                 <td class="px-6 py-4">{{ elf.size }}</td>
                 <td class="px-6 py-4">{{ elf.crash_count }}</td>
                 <td class="px-6 py-4">
-                    <a href="/build/{{elf.elf_file_id}}"
+                    <a href="{{ url_for('showBuild', build_id=elf.elf_file_id) }}"
                         class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Edit</a>
-                    <a href="/elf/delete/{{elf.elf_file_id}}"
+                    <a href="{{ url_for('deleteElf', elf_file_id=elf.elf_file_id) }}"
                         class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
-                    <a href="/build/{{elf.elf_file_id}}/download"
+                    <a href="{{ url_for('download_build', build_id=elf.elf_file_id) }}"
                         class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Download</a>
                 </td>
             </tr>
