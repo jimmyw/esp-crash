@@ -6,7 +6,7 @@
 
 <div class="max-w-md p-8 bg-white border border-gray-200 rounded-lg shadow mt-4">
     <h2 class="text-2xl">Update device details:</h2>
-    <form action="{{ url_for('updateDeviceAlias', device_id=device.device_id) }}" method="POST">
+    <form action="{{ url_for('update_device_alias', device_id=device.device_id) }}" method="POST">
         <label for="deviceAlias" class="text-lg">Device Alias</label>
         <input type="hidden" name="device_id" value="{{device.device_id}}">
         <input type="text" name="alias" placeholder="Enter new alias" class="p-2 border-2 border-gray-300 rounded-md" value="{{device.alias or ""}}">

@@ -7,7 +7,7 @@
     </h1>
 
     {% if project_name %}
-    <a href="{{ url_for('listProjectCrashes', project_name=project_name) }}" class="flex items-center p-4">
+    <a href="{{ url_for('list_project_crashes', project_name=project_name) }}" class="flex items-center p-4">
         <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
@@ -32,7 +32,7 @@
                 <td class="px-6 py-4">{{ acl.project_name }}</td>
                 <td class="px-6 py-4">{{ acl.github}}</td>
                 <td class="px-6 py-4">{{ acl.date }}</td>
-                <td class="px-6 py-4"><a href="{{ url_for('deleteACL', project_name=project_name, github=acl.github) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a></td>
+                <td class="px-6 py-4"><a href="{{ url_for('delete_acl', project_name=project_name, github=acl.github) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a></td>
             </tr>
 
             {% endfor %}
@@ -41,7 +41,7 @@
 </div>
 <div class="max-w-md p-8 bg-white border border-gray-200 rounded-lg shadow mt-4">
     <h2 class="text-2xl">Add new user:</h2>
-    <form action="{{ url_for('createACL', project_name=project_name) }}" method="post" class="space-y-4">
+    <form action="{{ url_for('create_acl', project_name=project_name) }}" method="post" class="space-y-4">
         <label for="github" class="text-lg">Github Name:</label>
         <input type="text" id="github" name="github" class="p-2 m-4 border-2 border-gray-300 rounded-md">
         <input type="submit" value="Submit" class="p-2 bg-blue-500 text-white rounded-md">

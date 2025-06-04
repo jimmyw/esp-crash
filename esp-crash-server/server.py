@@ -64,6 +64,7 @@ app.jinja_env.filters['format_datetime'] = format_datetime
 
 
 def render_template(template_name, **context):
+    """Render a template with project list context."""
     projects = ldb().get_data("""
         SELECT
             project_name,
@@ -81,6 +82,7 @@ def render_template(template_name, **context):
 github_bp = make_github_blueprint()
 app.register_blueprint(github_bp, url_prefix="/login")
 def login_required(f):
+    """Decorator to require GitHub authentication."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not github.authorized:
@@ -106,6 +108,7 @@ def handle_chunking():
         request.environ["wsgi.input_terminated"] = True
 
 def ldb():
+    """Lazy-initialize and return the database connection."""
     global conn
     if not conn:
         conn = DBManager(password_file='/run/secrets/db-password', host='192.168.10.92', user='esp-crash', database='esp-crash')
@@ -114,21 +117,25 @@ def ldb():
 @app.route("/dashboard")
 @login_required
 def dashboard():
+    """Render the user dashboard."""
     return render_template('dashboard.html')
 
 @app.route("/settings")
 @login_required
 def settings():
+    """Render the account settings page."""
     return render_template('settings.html')
 
 @app.route('/')
 @login_required
-def listProjects():
+def list_projects():
+    """Render the landing page listing all projects."""
     return render_template('index.html')
 
 @app.route('/projects/<project_name>')
 @login_required
-def listProjectCrashes(project_name):
+def list_project_crashes(project_name):
+    """List crashes for a given project name."""
     search = request.args.get('search', None)
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
@@ -188,12 +195,14 @@ def listProjectCrashes(project_name):
 
 @app.route('/crash')
 @login_required
-def listCrashes():
-    return listProjectCrashes(None)
+def list_crashes():
+    """List the most recent crashes across all projects."""
+    return list_project_crashes(None)
 
 @app.route('/projects/create', methods = ['POST'])
 @login_required
-def createProject():
+def create_project():
+    """Create a new project for the authenticated user."""
 
     project_name = request.form['project_name']
     if len(project_name) < 1:
@@ -220,11 +229,12 @@ def createProject():
 
         """, (project_name, session["gh_user"]))
     conn.commit()
-    return redirect(url_for("listProjectCrashes", project_name = project_name), code=302)
+    return redirect(url_for("list_project_crashes", project_name=project_name), code=302)
 
 @app.route('/projects/<project_name>/builds')
 @login_required
-def listBuilds(project_name):
+def list_builds(project_name):
+    """List available build files for a project."""
     builds = ldb().get_data("""
         SELECT
             elf_file.elf_file_id,
@@ -247,12 +257,14 @@ def listBuilds(project_name):
 
 @app.route('/projects/<project_name>/acl')
 @login_required
-def listACL(project_name):
+def list_acl(project_name):
+    """Redirect to project access control settings."""
     return redirect(url_for('project_settings', project_name=project_name))
 
-@app.route('/projects/<project_name>/acl/create', methods = ['POST'])
+@app.route('/projects/<project_name>/acl/create', methods=['POST'])
 @login_required
-def createACL(project_name):
+def create_acl(project_name):
+    """Add a GitHub user to a project's access list."""
     c = ldb().cursor()
     acls = ldb().get_data("""
         SELECT
@@ -297,7 +309,8 @@ def createACL(project_name):
 
 @app.route('/projects/<project_name>/acl/delete/<github>')
 @login_required
-def deleteACL(project_name, github):
+def delete_acl(project_name, github):
+    """Remove a GitHub user from a project's access list."""
     c = ldb().cursor()
     c.execute("""
         DELETE FROM
@@ -314,6 +327,7 @@ def deleteACL(project_name, github):
 @app.route('/projects/<project_name>/settings')
 @login_required
 def project_settings(project_name):
+    """Display and manage settings for a specific project."""
     db = ldb()
     # Verify user has access to this project
     allowed = db.get_data("""
@@ -339,6 +353,7 @@ def project_settings(project_name):
 @app.route('/projects/<project_name>/webhooks', methods=['GET', 'POST'])
 @login_required
 def project_webhooks_admin(project_name):
+    """Manage webhooks for a project."""
     db = ldb()
     cur = db.cursor()
 
@@ -391,7 +406,8 @@ def project_webhooks_admin(project_name):
 
 @app.route('/elf/delete/<elf_file_id>')
 @login_required
-def deleteElf(elf_file_id):
+def delete_elf(elf_file_id):
+    """Delete an uploaded ELF build."""
     c = ldb().cursor()
     c.execute("DELETE FROM elf_file WHERE elf_file_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (elf_file_id, session["gh_user"]))
     conn.commit()
@@ -400,11 +416,13 @@ def deleteElf(elf_file_id):
 @app.route('/crash/<crash_id>')
 @login_required
 def show_crash(crash_id):
+    """Redirect to crash details, inferring the project name."""
     return show_project_crash(None, crash_id)
 
 @app.route('/projects/<project_name>/<crash_id>')
 @login_required
 def show_project_crash(project_name, crash_id):
+    """Display crash details for a project."""
 
     # Fetch crash data from database
     crash = ldb().get_data("""
@@ -435,6 +453,7 @@ def show_project_crash(project_name, crash_id):
 @app.route('/projects/<project_name>/<crash_id>/refresh')
 @login_required
 def refresh_crash(project_name, crash_id):
+    """Clear cached dump data so it will be reprocessed."""
 
     # Fetch crash data from database
     refresh = """
@@ -457,6 +476,7 @@ def refresh_crash(project_name, crash_id):
 
 @app.route('/cron')
 def cron():
+    """Process pending crash dumps and send webhooks."""
 
     c = ldb().cursor()
     # Fetch all crashes from database that has not been processed
@@ -563,6 +583,7 @@ def cron():
 @app.route('/build/<build_id>/download')
 @login_required
 def download_build(build_id):
+    """Download ELF build data as a zip archive."""
 
     # Fetch all elf image data from database that matches this project and version
     elf_images = ldb().get_data("""
@@ -618,6 +639,7 @@ def download_build(build_id):
 @app.route('/crash/<crash_id>/download')
 @login_required
 def download_crash(crash_id):
+    """Download a crash dump along with related ELF files."""
 
     # Fetch crash data from database
     crash = ldb().get_data("""
@@ -693,6 +715,7 @@ def download_crash(crash_id):
 @login_required
 @login_required
 def delete_crash(project_name, crash_id):
+    """Delete a crash entry."""
     c = ldb().cursor()
     c.execute("DELETE FROM crash WHERE crash_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (crash_id, session["gh_user"]))
     conn.commit()
@@ -701,7 +724,8 @@ def delete_crash(project_name, crash_id):
 
 @app.route('/device/<device_id>')
 @login_required
-def showDevice(device_id):
+def show_device(device_id):
+    """Display details for a specific device."""
     #app.logger.info(device_id)
     devices = ldb().get_data("""
         SELECT
@@ -719,7 +743,8 @@ def showDevice(device_id):
 
 @app.route('/build/<build_id>')
 @login_required
-def showBuild(build_id):
+def show_build(build_id):
+    """Display details for a specific build."""
     #app.logger.info(build_id)
     builds = ldb().get_data("""
         SELECT
@@ -736,9 +761,10 @@ def showBuild(build_id):
         return render_template('build.html', build = builds[0])
     return "Build not found", 400
 
-@app.route('/device/<device_id>', methods = ['POST'])
+@app.route('/device/<device_id>', methods=['POST'])
 @login_required
-def updateDeviceAlias(device_id):
+def update_device_alias(device_id):
+    """Update the user-defined alias for a device."""
     # Extract the new alias from the POST data
     new_alias = request.form.get('alias')
 
@@ -751,11 +777,12 @@ def updateDeviceAlias(device_id):
     """, (new_alias, device_id))
     conn.commit()
     print(res)
-    return showDevice(device_id)
+    return show_device(device_id)
 
-@app.route('/build/<build_id>', methods = ['POST'])
+@app.route('/build/<build_id>', methods=['POST'])
 @login_required
-def updateBuildAlias(build_id):
+def update_build_alias(build_id):
+    """Update the alias for a specific build."""
     # Extract the new alias from the POST data
     new_alias = request.form.get('alias')
 
@@ -768,10 +795,11 @@ def updateBuildAlias(build_id):
     """, (new_alias, build_id))
     conn.commit()
     print(res)
-    return showBuild(build_id)
+    return show_build(build_id)
 
 @app.route('/dump', methods = ['POST'])
 def dump():
+    """Upload a crash dump from a device."""
     # Connect to the database
     conn = ldb()
 
@@ -832,6 +860,7 @@ def dump():
 
 @app.route('/upload_elf', methods = ['POST'])
 def upload_elf():
+    """Upload an ELF file containing build information."""
     # Connect to the database
     conn = ldb()
 

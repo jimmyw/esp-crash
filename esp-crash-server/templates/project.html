@@ -14,7 +14,7 @@ endblock %}
     </form>
 
     {% if project_name %}
-    <a href="{{ url_for('listBuilds', project_name=project_name) }}" class="flex items-center p-4">
+    <a href="{{ url_for('list_builds', project_name=project_name) }}" class="flex items-center p-4">
         <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
             stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -54,11 +54,11 @@ endblock %}
                 </td>
                 {% if not project_name %}
                 <td class="px-6 py-4">
-                    <a href="{{ url_for('project_detail', project_name=crash.project_name) }}">{{ crash.project_name }}</a>
+                    <a href="{{ url_for('list_project_crashes', project_name=crash.project_name) }}">{{ crash.project_name }}</a>
                 </td>
                 {% endif %}
                 <td class="px-6 py-4">
-                    <a href="{{ url_for('listProjectCrashes', project_name=crash.project_name, search=crash.project_ver) }}">
+                    <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, search=crash.project_ver) }}">
                         {% for project_alias in crash.project_alias %}
                             {% if project_alias %}<b>{{ project_alias }}</b> {% endif %}
                         {% endfor %}
@@ -67,19 +67,19 @@ endblock %}
                 </td>
                 {% if crash.alias %}
                 <td class="px-6 py-4">
-                    <a href="{{ url_for('listProjectCrashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a>
+                    <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a>
                 </td>
                 {% else %}
                 <td class="px-6 py-4">
-                    <a href="{{ url_for('listProjectCrashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.ext_device_id }}</a>
+                    <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.ext_device_id }}</a>
                 </td>
                 {% endif %}
                 <td class="px-6 py-4">
                     <a href="{{ url_for('delete_crash', project_name=crash.project_name, crash_id=crash.crash_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
-                    <a href="{{ url_for('showDevice', device_id=crash.device_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>
+                    <a href="{{ url_for('show_device', device_id=crash.device_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>
                     {% if crash.elf_file_id %}
                     {% for elf_file_id in crash.elf_file_id %}
-                    <a href="{{ url_for('showBuild', build_id=elf_file_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Build</a>
+                    <a href="{{ url_for('show_build', build_id=elf_file_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Build</a>
                     {% endfor %}
                     {% endif %}
                 </td>
