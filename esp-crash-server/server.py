@@ -147,8 +147,14 @@ def list_project_crashes(project_name):
         where_part += "AND crash.project_name = %s "
         args = args + (project_name,)
     if search and len(search) > 0:
-        where_part += "AND textsearch @@ to_tsquery(%s) "
-        args = args + (search,)
+        # Clean and format for to_tsquery
+        sanitized_search = re.sub(r'[^\w\s]', ' ', search)
+        # Split by whitespace, filter empty strings, and join with &
+        terms = [term.strip() for term in sanitized_search.split() if term.strip()]
+        if terms:
+            tsquery_string = ' & '.join(terms)
+            where_part += "AND textsearch @@ to_tsquery(%s) "
+            args = args + (tsquery_string,)
     args = args + (limit, offset,)
 
     crashes = ldb().get_data("""
