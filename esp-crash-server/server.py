@@ -855,6 +855,21 @@ def dump():
 
     # Execute the SQL query to insert the compressed content into the database
     cursor = conn.cursor()
+
+
+    # Rate limiting: Check if device has uploaded more than 5 crashes in the last hour
+    cursor.execute('''
+        SELECT COUNT(*)
+        FROM crash
+        JOIN device USING (device_id)
+        WHERE ext_device_id = %s
+        AND date >= NOW() - INTERVAL '1 hour'
+    ''', (arguments["DEVICE_ID"],))
+    crash_count = cursor.fetchone()[0]
+
+    if crash_count >= 5:
+        return "Rate limit exceeded: Maximum 5 crashes per device per hour", 429
+
     cursor.execute('INSERT INTO device (ext_device_id) VALUES (%s) ON CONFLICT (ext_device_id) DO UPDATE SET ext_device_id = EXCLUDED.ext_device_id RETURNING device_id', (arguments["DEVICE_ID"],))
     device_id = cursor.fetchone()[0]
     cursor.execute('INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id) VALUES (NOW(), %s, %s, %s, %s)',
