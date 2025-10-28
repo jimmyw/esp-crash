@@ -1,8 +1,9 @@
 import os
 import re
+import json
 
 from functools import wraps
-from flask import Flask, app, request, redirect, url_for, session, send_file
+from flask import Flask, app, request, redirect, url_for, session, send_file, jsonify
 from flask_dance.contrib.github import make_github_blueprint, github
 from werkzeug.middleware.proxy_fix import ProxyFix
 import psycopg2
@@ -58,6 +59,12 @@ app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
 app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
 app.config["SLACK_CLIENT_ID"] = os.environ.get("SLACK_CLIENT_ID", "")
 app.config["SLACK_CLIENT_SECRET"] = os.environ.get("SLACK_CLIENT_SECRET", "")
+
+# External URL configuration for Slack notifications
+app.config["EXTERNAL_URL"] = os.environ.get("EXTERNAL_URL", "")
+if not app.config["EXTERNAL_URL"]:
+    app.logger.warning("EXTERNAL_URL not set - Slack URLs may not work properly")
+
 conn = None
 
 # Custom filter to format date and remove microseconds
@@ -65,6 +72,21 @@ def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
     return value.strftime(format)
 
 app.jinja_env.filters['format_datetime'] = format_datetime
+
+def external_url_for(endpoint, **values):
+    """Generate external URL for Slack notifications."""
+    external_url = app.config.get("EXTERNAL_URL")
+    if external_url:
+        # Remove trailing slash from external URL
+        external_url = external_url.rstrip('/')
+        # Generate the path using url_for
+        with app.app_context():
+            path = url_for(endpoint, **values)
+        return f"{external_url}{path}"
+    else:
+        # Fallback to regular url_for with _external=True
+        with app.app_context():
+            return url_for(endpoint, _external=True, **values)
 
 
 def render_template(template_name, **context):
@@ -503,6 +525,36 @@ def slack_callback():
         app.logger.error(f"Slack OAuth error: {e}")
         return f"Failed to complete Slack integration: {str(e)}", 500
 
+@app.route('/slack/interactive', methods=['POST'])
+def handle_slack_interactivity():
+    """Handle Slack interactive component events."""
+    try:
+        # Slack sends the payload as form data
+        payload = json.loads(request.form.get('payload', '{}'))
+        
+        # Log the interaction for debugging
+        app.logger.info(f"Slack interaction received: {payload.get('type', 'unknown')}")
+        
+        if payload.get('type') == 'block_actions':
+            # Handle button clicks
+            action = payload['actions'][0] if payload.get('actions') else {}
+            action_id = action.get('action_id', '')
+            
+            app.logger.info(f"Button clicked: {action_id}")
+            
+            # For URL buttons, just return empty response and let Slack handle the URL redirect
+            if action_id in ['view_crash_details', 'view_project_settings']:
+                # Return empty 200 response - this tells Slack to proceed with the URL
+                return '', 200
+            
+        # For any other interaction types, just acknowledge
+        return '', 200
+        
+    except Exception as e:
+        app.logger.error(f"Slack interactivity error: {e}")
+        # Always return 200 to avoid Slack retries
+        return '', 200
+
 @app.route('/projects/<project_name>/slack/channel-selection')
 @login_required
 def slack_channel_selection(project_name):
@@ -798,8 +850,9 @@ def cron():
 
         if webhooks:
             app.logger.info(f"Found {len(webhooks)} webhooks for project {project_name}")
-            with app.app_context(): # Needed for url_for to work outside of a request context
-                details_url = url_for('show_project_crash', project_name=crash["project_name"], crash_id=crash["crash_id"], _external=True)
+            details_url = external_url_for('show_project_crash', project_name=crash["project_name"], crash_id=crash["crash_id"])
+
+            app.logger.info(f"Generated details URL for crash {crash['crash_id']}: {details_url}")
 
             payload = {
                 "project_name": crash["project_name"],
@@ -833,8 +886,9 @@ def cron():
 
         if slack_integrations:
             app.logger.info(f"Found {len(slack_integrations)} Slack integrations for project {project_name}")
-            with app.app_context(): # Needed for url_for to work outside of a request context
-                details_url = url_for('show_project_crash', project_name=crash["project_name"], crash_id=crash["crash_id"], _external=True)
+            details_url = external_url_for('show_project_crash', project_name=crash["project_name"], crash_id=crash["crash_id"])
+
+            app.logger.info(f"Generated Slack details URL for crash {crash['crash_id']}: {details_url}")
 
             for integration in slack_integrations:
                 try:
@@ -874,15 +928,15 @@ def cron():
                     
                     # Add crash dump snippet if available
                     if dump and len(dump.strip()) > 0:
-                        crash_snippet = dump[:500]
-                        if len(dump) > 500:
+                        crash_snippet = dump[:1000]
+                        if len(dump) > 1000:
                             crash_snippet += "..."
                         
                         blocks.append({
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"*Crash Dump (first 500 chars):*\n```{crash_snippet}```"
+                                "text": f"*Crash Dump (first 1000 chars):*\n```{crash_snippet}```"
                             }
                         })
                     
@@ -1336,8 +1390,9 @@ def test_slack_integration(project_name):
     
     results = []
     debug_info = []
-    with app.app_context():
-        test_url = url_for('project_settings', project_name=project_name, _external=True)
+    test_url = external_url_for('project_settings', project_name=project_name)
+    
+    app.logger.info(f"Generated test URL: {test_url}")
     
     for integration in slack_integrations:
         channel_name = integration['slack_channel_name']
