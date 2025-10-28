@@ -88,32 +88,94 @@
     </form>
 </div>
 
+<div class="w-5/6 mt-12 mb-8 relative overflow-x-auto shadow-md sm:rounded-lg">
+    <h2 class="text-2xl font-semibold p-4 bg-gray-100 border-b">Slack Integrations</h2>
+    {% if slack_integrations %}
+    <table class="w-full text-sm text-left text-gray-500">
+        <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+            <tr>
+                <th scope="col" class="px-6 py-3">Workspace</th>
+                <th scope="col" class="px-6 py-3">Channel</th>
+                <th scope="col" class="px-6 py-3">Added Date</th>
+                <th scope="col" class="px-6 py-3 text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for integration in slack_integrations %}
+            <tr class="bg-white border-b hover:bg-gray-50">
+                <td class="px-6 py-4">
+                    <div>
+                        <div class="font-medium">{{ integration.slack_team_name or 'Unknown Workspace' }}</div>
+                        <div class="text-sm text-gray-500">{{ integration.slack_team_id }}</div>
+                    </div>
+                </td>
+                <td class="px-6 py-4">#{{ integration.slack_channel_name }}</td>
+                <td class="px-6 py-4">{{ integration.created_date|format_datetime }}</td>
+                <td class="px-6 py-4 text-right">
+                    <a href="{{ url_for('verify_slack_integration', project_name=project_name) }}" 
+                       class="font-medium text-purple-600 hover:underline mr-4"
+                       target="_blank">Verify</a>
+                    <a href="{{ url_for('test_slack_integration', project_name=project_name) }}" 
+                       class="font-medium text-green-600 hover:underline mr-4"
+                       target="_blank">Test</a>
+                    <a href="{{ url_for('delete_slack_integration', project_name=project_name, integration_id=integration.slack_integration_id) }}" 
+                       class="font-medium text-red-600 hover:underline"
+                       onclick="return confirm('Are you sure you want to remove this Slack integration?')">Remove</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="p-4 text-gray-700">No Slack integrations configured for this project.</p>
+    {% endif %}
+</div>
+
+<div class="max-w-md p-6 bg-white border border-gray-200 rounded-lg shadow mb-12">
+    <h2 class="text-2xl font-semibold mb-4">Add Slack Integration</h2>
+    <p class="text-gray-600 mb-4">
+        Connect this project to Slack to receive crash notifications directly in your workspace.
+    </p>
+    <div class="space-y-4">
+        <a href="{{ url_for('slack_auth', project_name=project_name) }}" 
+           class="w-full inline-flex justify-center items-center px-4 py-2 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+            <svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M5.42 9.47c-1.01-.28-2.07.31-2.35 1.32-.28 1.01.31 2.07 1.32 2.35l2.69.74.74-2.69-2.4-.72zm8.1 2.23l1.76-6.39c.28-1.01-.31-2.07-1.32-2.35-1.01-.28-2.07.31-2.35 1.32l-1.76 6.39 2.67.03zm5.13 1.58c1.01.28 2.07-.31 2.35-1.32.28-1.01-.31-2.07-1.32-2.35l-2.69-.74-.74 2.69 2.4.72zm-8.1-2.23l-1.76 6.39c-.28 1.01.31 2.07 1.32 2.35 1.01.28 2.07-.31 2.35-1.32l1.76-6.39-2.67-.03z"/>
+            </svg>
+            Add to Slack
+        </a>
+        <p class="text-xs text-gray-500">
+            You'll be redirected to Slack to authorize the ESP-Crash app for your workspace.
+        </p>
+    </div>
+</div>
+
 <div class="w-5/6 mt-12 p-6 bg-white border border-gray-200 rounded-lg shadow">
-    <h2 class="text-2xl font-semibold mb-4 border-b pb-2">Slack Integration Example</h2>
-    <h3 class="text-xl font-semibold mt-4 mb-2"><strong>How to post to a Slack channel:</strong></h3>
-    <ol class="list-decimal list-inside space-y-2 text-gray-700">
-        <li>
-            Create an Incoming Webhook integration in your Slack workspace:
-            <ul class="list-disc list-inside ml-4 mt-1 space-y-1">
-                <li>Go to <code>https://[your-slack-workspace].slack.com/apps/A0F7XDUAZ-incoming-webhooks</code> (or search for "Incoming WebHooks" in the Slack App Directory).</li>
-                <li>Click "Add to Slack".</li>
-                <li>Choose a channel where notifications will be posted and click "Add Incoming WebHooks integration".</li>
-                <li>Copy the 'Webhook URL' provided by Slack (it will look something like <code>https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX</code>).</li>
-            </ul>
-        </li>
-        <li>
-            Paste the copied 'Webhook URL' from Slack into the 'Webhook URL' field above and click 'Add Webhook'.
-        </li>
-        <li>
-            When a new crash report is processed for this project, a notification will be sent to the configured Slack channel.
-        </li>
-    </ol>
-    <h3 class="text-xl font-semibold mt-6 mb-2"><strong>Payload details:</strong></h3>
-    <p class="text-gray-700">
-        Slack will receive a JSON payload. By default, Slack will display this as a text message. The payload includes project name, version, crash ID, a snippet of the dump, and a link back to the crash details page here.
-    </p>
-    <p class="mt-2 text-gray-700">
-        For more advanced formatting in Slack (e.g., using blocks or attachments), you might need to use a proxy/service that transforms this server's payload into Slack's desired format, or use a Slack app that can process generic JSON webhooks.
-    </p>
+    <h2 class="text-2xl font-semibold mb-4 border-b pb-2">Integration Information</h2>
+    
+    <div class="mb-6">
+        <h3 class="text-xl font-semibold mb-2">Webhook Integration</h3>
+        <p class="text-gray-700 mb-2">
+            Generic webhooks send crash data as JSON to any URL you specify. Perfect for custom integrations or services like Discord, Microsoft Teams, or your own applications.
+        </p>
+        <p class="text-sm text-gray-600">
+            <strong>Payload includes:</strong> project name, version, crash ID, dump snippet, and details URL
+        </p>
+    </div>
+    
+    <div>
+        <h3 class="text-xl font-semibold mb-2">Slack Integration</h3>
+        <p class="text-gray-700 mb-2">
+            Native Slack integration provides rich formatting with crash details displayed as interactive blocks, including action buttons to view crash details directly.
+        </p>
+        <p class="text-sm text-gray-600 mb-2">
+            <strong>Features:</strong> Rich message formatting, action buttons, automatic channel detection, team-specific tokens
+        </p>
+        <div class="bg-yellow-50 border border-yellow-200 rounded-md p-3 mt-3">
+            <p class="text-yellow-800 text-sm">
+                <strong>💡 Important:</strong> To see test messages and crash notifications, make sure you're a member of the Slack workspace and have access to the configured channel. If you don't see messages after a successful test, check that you're logged into the correct Slack workspace.
+            </p>
+        </div>
+    </div>
 </div>
 {% endblock %}

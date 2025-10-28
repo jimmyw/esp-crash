@@ -1,0 +1,125 @@
+{% extends "layout.html" %}
+{% block title %}Slack Integration Verification - {{ project_name }}{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl leading-none text-slate-900">
+        Slack Integration Verification for <b>{{ project_name }}</b>
+    </h1>
+    <a href="{{ url_for('project_settings', project_name=project_name) }}" class="flex items-center p-2 text-blue-600 hover:underline">
+        <svg class="w-5 h-5 mr-1 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+        </svg>
+        <span>Back to Project Settings</span>
+    </a>
+</div>
+
+<div class="max-w-4xl space-y-6">
+    <!-- Current Slack Integrations -->
+    <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <h2 class="text-xl font-semibold mb-4">📱 Current Slack Integrations</h2>
+        {% if integrations %}
+            <table class="w-full border-collapse border border-gray-300">
+                <thead>
+                    <tr class="bg-gray-50">
+                        <th class="border border-gray-300 px-4 py-2 text-left">Team Name</th>
+                        <th class="border border-gray-300 px-4 py-2 text-left">Channel</th>
+                        <th class="border border-gray-300 px-4 py-2 text-left">Bot Status</th>
+                        <th class="border border-gray-300 px-4 py-2 text-left">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for integration in integrations %}
+                    <tr>
+                        <td class="border border-gray-300 px-4 py-2">{{ integration.team_name }}</td>
+                        <td class="border border-gray-300 px-4 py-2">#{{ integration.channel_name }}</td>
+                        <td class="border border-gray-300 px-4 py-2">
+                            {% if integration.bot_valid %}
+                                <span class="text-green-600">✅ Valid</span>
+                            {% else %}
+                                <span class="text-red-600">❌ Invalid</span>
+                            {% endif %}
+                        </td>
+                        <td class="border border-gray-300 px-4 py-2">
+                            <form method="POST" action="{{ url_for('test_slack_integration', project_name=project_name) }}" style="display: inline;">
+                                <input type="hidden" name="integration_id" value="{{ integration.id }}">
+                                <button type="submit" class="text-blue-600 hover:underline">Test</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p class="text-gray-600">No Slack integrations found for this project.</p>
+            <p class="mt-2">
+                <a href="{{ url_for('project_settings', project_name=project_name) }}" class="text-blue-600 hover:underline">
+                    Set up Slack integration
+                </a>
+            </p>
+        {% endif %}
+    </div>
+
+    <!-- Verification Results -->
+    {% if verification_results %}
+    <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <h2 class="text-xl font-semibold mb-4">🔍 Verification Results</h2>
+        {% for result in verification_results %}
+        <div class="mb-3 p-3 rounded border {% if result.startswith('✅') %}bg-green-50 border-green-200 text-green-800{% elif result.startswith('❌') %}bg-red-50 border-red-200 text-red-800{% else %}bg-gray-50 border-gray-200{% endif %}">
+            {{ result|safe }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Database Information -->
+    {% if db_info %}
+    <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+        <button id="db-info-btn" 
+                onclick="toggleDbInfo()" 
+                class="mb-3 px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
+            Show Database Info
+        </button>
+        <div id="db-info" class="hidden">
+            <h3 class="text-lg font-semibold mb-3">🗄️ Database Information:</h3>
+            <div class="bg-white border rounded-md p-3 font-mono text-sm space-y-1">
+                {% for db_line in db_info %}
+                <div>{{ db_line|safe }}</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Help Section -->
+    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h3 class="text-lg font-semibold text-blue-800 mb-3">💡 Need Help?</h3>
+        <div class="space-y-3 text-blue-700">
+            <div>
+                <strong>Bot not in channel:</strong> Go to the Slack channel and type 
+                <code class="bg-blue-100 px-2 py-1 rounded text-blue-800">/invite @ESP-Crash</code> to invite the bot.
+            </div>
+            <div>
+                <strong>Invalid token:</strong> The Slack app may have been uninstalled. 
+                <a href="{{ url_for('project_settings', project_name=project_name) }}" class="underline">Re-add to Slack</a>.
+            </div>
+            <div>
+                <strong>Messages not appearing:</strong> Refresh your Slack client and make sure you're in the correct workspace.
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function toggleDbInfo() {
+    const dbInfo = document.getElementById('db-info');
+    const btn = document.getElementById('db-info-btn');
+    if (dbInfo.classList.contains('hidden')) {
+        dbInfo.classList.remove('hidden');
+        btn.textContent = 'Hide Database Info';
+    } else {
+        dbInfo.classList.add('hidden');
+        btn.textContent = 'Show Database Info';
+    }
+}
+</script>
+{% endblock %}

@@ -42,3 +42,14 @@ BEFORE INSERT OR UPDATE ON crash
 FOR EACH ROW EXECUTE FUNCTION update_textsearch();
 
 CREATE TABLE project_webhooks (webhook_id SERIAL PRIMARY KEY, project_name TEXT, webhook_url TEXT);
+CREATE TABLE project_slack_integrations (
+    slack_integration_id SERIAL PRIMARY KEY, 
+    project_name TEXT, 
+    slack_team_id TEXT, 
+    slack_team_name TEXT,
+    slack_channel_id TEXT, 
+    slack_channel_name TEXT,
+    slack_access_token TEXT,
+    created_date TIMESTAMP DEFAULT NOW(),
+    github_user TEXT
+);

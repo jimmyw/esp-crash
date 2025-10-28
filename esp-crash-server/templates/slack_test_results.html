@@ -1,0 +1,89 @@
+{% extends "layout.html" %}
+{% block title %}Slack Test Results - {{ project_name }}{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl leading-none text-slate-900">
+        Slack Integration Test Results for <b>{{ project_name }}</b>
+    </h1>
+    <a href="{{ url_for('project_settings', project_name=project_name) }}" class="flex items-center p-2 text-blue-600 hover:underline">
+        <svg class="w-5 h-5 mr-1 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+        </svg>
+        <span>Back to Project Settings</span>
+    </a>
+</div>
+
+<div class="max-w-4xl space-y-6">
+    <!-- Test Results -->
+    {% for result in results %}
+    <div class="p-4 rounded-lg border {% if result.startswith('✅') %}bg-green-50 border-green-200 text-green-800{% else %}bg-red-50 border-red-200 text-red-800{% endif %}">
+        {{ result|safe }}
+    </div>
+    {% endfor %}
+
+    <!-- Debug Information -->
+    {% if debug_info %}
+    <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+        <button id="debug-btn" 
+                onclick="toggleDebug()" 
+                class="mb-3 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+            Show Debug Info
+        </button>
+        <div id="debug-info" class="hidden">
+            <h3 class="text-lg font-semibold mb-3">🔍 Debug Information:</h3>
+            <div class="bg-white border rounded-md p-3 font-mono text-sm space-y-1">
+                {% for debug_line in debug_info %}
+                <div>{{ debug_line|safe }}</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Success Troubleshooting -->
+    {% if has_success %}
+    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h3 class="text-lg font-semibold text-blue-800 mb-3">✅ Test Successful - Don't See the Message?</h3>
+        <p class="text-blue-700 mb-3"><strong>If the test shows success but you don't see the message in Slack:</strong></p>
+        <ol class="list-decimal list-inside space-y-2 text-blue-700">
+            <li><strong>Check the correct Slack workspace:</strong> Make sure you're logged into the Slack workspace mentioned above</li>
+            <li><strong>Verify channel access:</strong> Ensure you're a member of the target channel</li>
+            <li><strong>Refresh Slack:</strong> Try refreshing your Slack client or switching channels and back</li>
+            <li><strong>Check message history:</strong> Look for the message timestamp shown above in the channel</li>
+            <li><strong>Multiple workspaces:</strong> If you're in multiple Slack workspaces, make sure you're viewing the correct one</li>
+        </ol>
+        <p class="mt-3 text-sm text-blue-600">
+            <strong>Note:</strong> A successful test means the message was delivered to Slack's servers. If you can't see it, it's usually a client/membership issue, not a bot configuration problem.
+        </p>
+    </div>
+    {% endif %}
+
+    <!-- Not in Channel Errors -->
+    {% if has_not_in_channel %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <h3 class="text-lg font-semibold text-yellow-800 mb-3">📋 How to fix "Bot not in channel" errors:</h3>
+        <ol class="list-decimal list-inside space-y-2 text-yellow-700">
+            <li>Go to the Slack channel mentioned in the error</li>
+            <li>Type: <code class="bg-yellow-100 px-2 py-1 rounded text-yellow-800">/invite @ESP-Crash</code> (or search for your app name)</li>
+            <li>Press Enter to invite the bot to the channel</li>
+            <li>Run the test again</li>
+        </ol>
+        <p class="mt-3 text-yellow-700"><strong>Note:</strong> The bot needs to be explicitly invited to each channel before it can send messages.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function toggleDebug() {
+    const debug = document.getElementById('debug-info');
+    const btn = document.getElementById('debug-btn');
+    if (debug.classList.contains('hidden')) {
+        debug.classList.remove('hidden');
+        btn.textContent = 'Hide Debug Info';
+    } else {
+        debug.classList.add('hidden');
+        btn.textContent = 'Show Debug Info';
+    }
+}
+</script>
+{% endblock %}

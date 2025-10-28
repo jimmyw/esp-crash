@@ -1,0 +1,120 @@
+{% extends "layout.html" %}
+{% block title %}Select Slack Channel - {{ project_name }}{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl leading-none text-slate-900">
+        Select Slack Channel for <b>{{ project_name }}</b>
+    </h1>
+    <a href="{{ url_for('project_settings', project_name=project_name) }}" class="flex items-center p-2 text-blue-600 hover:underline">
+        <svg class="w-5 h-5 mr-1 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+        </svg>
+        <span>Back to Project Settings</span>
+    </a>
+</div>
+
+<div class="max-w-4xl bg-white border border-gray-200 rounded-lg shadow p-6">
+    <div class="mb-6">
+        <h2 class="text-2xl font-semibold mb-2">Choose Notification Channel</h2>
+        <p class="text-gray-600 mb-2">
+            Successfully connected to Slack workspace: <strong>{{ team_name }}</strong>
+        </p>
+        <p class="text-gray-600">
+            Select the channel where ESP-Crash notifications should be sent for this project.
+        </p>
+    </div>
+
+    <form action="{{ url_for('slack_channel_selection_post', project_name=project_name) }}" method="post">
+        <div class="mb-6">
+            <label class="block text-sm font-medium text-gray-700 mb-3">Available Channels:</label>
+            
+            {% if channels %}
+            <div class="space-y-2 max-h-96 overflow-y-auto border border-gray-200 rounded-md p-3">
+                {% for channel in channels %}
+                <div class="flex items-center p-3 border border-gray-100 rounded-lg hover:bg-gray-50">
+                    <input type="radio" 
+                           id="channel_{{ channel.id }}" 
+                           name="channel_id" 
+                           value="{{ channel.id }}"
+                           class="mr-3 text-blue-600 focus:ring-blue-500"
+                           onchange="updateSelectedChannel('{{ channel.id }}', '{{ channel.name }}')"
+                           {% if channel.name == 'general' %}checked{% endif %}>
+                    <input type="hidden" id="channel_name_{{ channel.id }}" value="{{ channel.name }}">
+                    
+                    <div class="flex-1">
+                        <div class="flex items-center">
+                            <label for="channel_{{ channel.id }}" class="flex items-center cursor-pointer">
+                                {% if channel.is_private %}
+                                <svg class="w-4 h-4 mr-2 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"></path>
+                                </svg>
+                                {% else %}
+                                <svg class="w-4 h-4 mr-2 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z"></path>
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.307 7.628A3.305 3.305 0 0110 7.5c.243 0 .49.027.693.128.21.105.413.24.597.426.18.18.302.421.349.673H10v2.146c-.243 0-.49-.027-.693-.128-.21-.105-.413-.24-.597-.426-.18-.18-.302-.421-.349-.673H10V7.5c-.347 0-.653.113-.895.372-.05.055-.09.115-.125.18l-.308-.183c.06-.1.13-.188.22-.241z" clip-rule="evenodd"></path>
+                                </svg>
+                                {% endif %}
+                                <span class="font-medium">#{{ channel.name }}</span>
+                                {% if channel.is_private %}
+                                <span class="ml-2 px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">Private</span>
+                                {% endif %}
+                            </label>
+                        </div>
+                        {% if channel.purpose %}
+                        <p class="text-sm text-gray-500 mt-1 ml-6">{{ channel.purpose }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <input type="hidden" name="channel_name" id="selected_channel_name" value="{% if channels %}{{ channels[0].name if channels[0].name != 'general' else 'general' }}{% endif %}">
+            
+            {% else %}
+            <div class="p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+                <p class="text-yellow-800">
+                    No accessible channels found. Please ensure the ESP-Crash app has been properly installed to your Slack workspace and has access to channels.
+                </p>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if channels %}
+        <div class="flex items-center justify-between">
+            <div class="text-sm text-gray-600">
+                <svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+                </svg>
+                Crash notifications will be sent to the selected channel
+            </div>
+            <div class="space-x-3">
+                <a href="{{ url_for('project_settings', project_name=project_name) }}" 
+                   class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
+                    Cancel
+                </a>
+                <button type="submit" 
+                        class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                    Complete Integration
+                </button>
+            </div>
+        </div>
+        {% endif %}
+    </form>
+</div>
+
+<script>
+function updateSelectedChannel(channelId, channelName) {
+    document.getElementById('selected_channel_name').value = channelName;
+}
+
+// Set initial value if general is checked
+document.addEventListener('DOMContentLoaded', function() {
+    const generalChannel = document.querySelector('input[type="radio"]:checked');
+    if (generalChannel) {
+        const channelName = document.getElementById('channel_name_' + generalChannel.value).value;
+        document.getElementById('selected_channel_name').value = channelName;
+    }
+});
+</script>
+
+{% endblock %}
