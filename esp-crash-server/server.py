@@ -763,7 +763,7 @@ def show_project_crash(project_name, crash_id):
     crash = crash[0]
 
     # Fetch all elf image data from database that matches this project and version
-    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, file_size, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
 
     return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"])
 
