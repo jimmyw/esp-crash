@@ -15,10 +15,19 @@ import datetime
 import requests
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class DBManager:
     def __init__(self, database='example', host="db", user="root", password_file=None):
         pf = open(password_file, 'r')
+        logger.info("Connecting to database %s at %s as user %s", database, host, user)
         self.connection = psycopg2.connect(
             user=user,
             password=pf.read(),
@@ -36,16 +45,18 @@ class DBManager:
 
     def get_data(self, *args):
         cur = self.cursor()
+        logger.info("Executing query: %s args: %s", args[0], args[1:])
         cur.execute(*args)
         result = cur.fetchall()
         column_names = [desc[0] for desc in cur.description]
         return [dict(zip(column_names, row)) for row in result]
 
-def get_data(cur, *args):
-    cur.execute(*args)
-    result = cur.fetchall()
-    column_names = [desc[0] for desc in cur.description]
-    return [dict(zip(column_names, row)) for row in result]
+#def get_data(cur, *args):
+#    logger.info("Executing query: %s", args[0])
+#    cur.execute(*args)
+#    result = cur.fetchall()
+#    column_names = [desc[0] for desc in cur.description]
+#    return [dict(zip(column_names, row)) for row in result]
 
 
 app = Flask(__name__)
