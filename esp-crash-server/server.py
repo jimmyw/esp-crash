@@ -275,14 +275,23 @@ def list_builds(project_name):
             elf_file.project_ver,
             elf_file.project_alias,
             length(elf_file.elf_file) AS size,
-            (SELECT COUNT(crash_id) FROM crash WHERE crash.project_name = elf_file.project_name AND crash.project_ver = elf_file.project_ver) AS crash_count
+
+            COUNT(crash) AS crash_count
         FROM
             elf_file
         JOIN
             project_auth USING (project_name)
+        LEFT JOIN
+            crash USING (project_name, project_ver)
         WHERE
             elf_file.project_name = %s AND
             project_auth.github = %s
+        GROUP BY
+            elf_file.elf_file_id,
+            elf_file.date,
+            elf_file.project_name,
+            elf_file.project_ver,
+            elf_file.project_alias
         ORDER BY date DESC
     """, (project_name, session["gh_user"],))
     return render_template('builds.html', elfs = builds, project_name = project_name)
@@ -383,15 +392,15 @@ def project_settings(project_name):
     # Get Slack integrations
     slack_integrations = db.get_data("""
         SELECT slack_integration_id, slack_team_id, slack_team_name, slack_channel_id, slack_channel_name, created_date
-        FROM project_slack_integrations 
-        WHERE project_name = %s 
+        FROM project_slack_integrations
+        WHERE project_name = %s
         ORDER BY created_date DESC
     """, (project_name,))
 
-    return render_template('project_settings.html', 
-                         project_name=project_name, 
-                         acls=acls, 
-                         webhooks=webhooks_list, 
+    return render_template('project_settings.html',
+                         project_name=project_name,
+                         acls=acls,
+                         webhooks=webhooks_list,
                          slack_integrations=slack_integrations,
                          slack_client_id=app.config['SLACK_CLIENT_ID'])
 
@@ -454,7 +463,7 @@ def project_webhooks_admin(project_name):
 def slack_auth(project_name):
     """Initiate Slack OAuth flow for a project."""
     db = ldb()
-    
+
     # Permission check: Ensure user is authorized for this project
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
@@ -462,10 +471,10 @@ def slack_auth(project_name):
     """, (project_name, session.get("gh_user")))
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
-    
+
     # Store project_name in session for callback
     session['slack_auth_project'] = project_name
-    
+
     # Redirect to Slack OAuth
     slack_oauth_url = (
         f"https://slack.com/oauth/v2/authorize?"
@@ -481,17 +490,17 @@ def slack_callback():
     """Handle Slack OAuth callback."""
     code = request.args.get('code')
     error = request.args.get('error')
-    
+
     if error:
         return f"Slack authorization failed: {error}", 400
-    
+
     if not code:
         return "Missing authorization code from Slack", 400
-    
+
     project_name = session.get('slack_auth_project')
     if not project_name:
         return "Missing project information. Please try again.", 400
-    
+
     try:
         # Exchange code for access token
         response = requests.post('https://slack.com/api/oauth.v2.access', data={
@@ -500,16 +509,16 @@ def slack_callback():
             'code': code,
             'redirect_uri': url_for('slack_callback', _external=True)
         })
-        
+
         slack_response = response.json()
-        
+
         if not slack_response.get('ok'):
             return f"Slack API error: {slack_response.get('error', 'Unknown error')}", 400
-        
+
         access_token = slack_response['access_token']
         team_id = slack_response['team']['id']
         team_name = slack_response['team']['name']
-        
+
         # Store OAuth data in session for channel selection
         session['slack_oauth_data'] = {
             'access_token': access_token,
@@ -517,10 +526,10 @@ def slack_callback():
             'team_name': team_name,
             'project_name': project_name
         }
-        
+
         # Redirect to channel selection page
         return redirect(url_for('slack_channel_selection', project_name=project_name))
-            
+
     except Exception as e:
         app.logger.error(f"Slack OAuth error: {e}")
         return f"Failed to complete Slack integration: {str(e)}", 500
@@ -531,25 +540,25 @@ def handle_slack_interactivity():
     try:
         # Slack sends the payload as form data
         payload = json.loads(request.form.get('payload', '{}'))
-        
+
         # Log the interaction for debugging
         app.logger.info(f"Slack interaction received: {payload.get('type', 'unknown')}")
-        
+
         if payload.get('type') == 'block_actions':
             # Handle button clicks
             action = payload['actions'][0] if payload.get('actions') else {}
             action_id = action.get('action_id', '')
-            
+
             app.logger.info(f"Button clicked: {action_id}")
-            
+
             # For URL buttons, just return empty response and let Slack handle the URL redirect
             if action_id in ['view_crash_details', 'view_project_settings']:
                 # Return empty 200 response - this tells Slack to proceed with the URL
                 return '', 200
-            
+
         # For any other interaction types, just acknowledge
         return '', 200
-        
+
     except Exception as e:
         app.logger.error(f"Slack interactivity error: {e}")
         # Always return 200 to avoid Slack retries
@@ -562,7 +571,7 @@ def slack_channel_selection(project_name):
     oauth_data = session.get('slack_oauth_data')
     if not oauth_data or oauth_data.get('project_name') != project_name:
         return "Session expired or invalid. Please try adding Slack integration again.", 400
-    
+
     # Permission check
     db = ldb()
     auth_check = db.get_data("""
@@ -571,20 +580,20 @@ def slack_channel_selection(project_name):
     """, (project_name, session.get("gh_user")))
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
-    
+
     try:
         slack_client = WebClient(token=oauth_data['access_token'])
-        
+
         # Get public channels
         channels_response = slack_client.conversations_list(
             types="public_channel,private_channel",
             exclude_archived=True,
             limit=200
         )
-        
+
         if not channels_response['ok']:
             return f"Failed to fetch channels: {channels_response.get('error', 'Unknown error')}", 400
-        
+
         channels = []
         for channel in channels_response['channels']:
             if channel.get('is_member', False) or not channel.get('is_private', False):
@@ -594,15 +603,15 @@ def slack_channel_selection(project_name):
                     'is_private': channel.get('is_private', False),
                     'purpose': channel.get('purpose', {}).get('value', '')[:100]
                 })
-        
+
         # Sort channels by name
         channels.sort(key=lambda x: x['name'])
-        
-        return render_template('slack_channel_selection.html', 
+
+        return render_template('slack_channel_selection.html',
                              project_name=project_name,
                              team_name=oauth_data['team_name'],
                              channels=channels)
-                             
+
     except Exception as e:
         app.logger.error(f"Channel selection error: {e}")
         return f"Failed to load channels: {str(e)}", 500
@@ -614,49 +623,49 @@ def slack_channel_selection_post(project_name):
     oauth_data = session.get('slack_oauth_data')
     if not oauth_data or oauth_data.get('project_name') != project_name:
         return "Session expired or invalid. Please try adding Slack integration again.", 400
-    
+
     selected_channel_id = request.form.get('channel_id')
     selected_channel_name = request.form.get('channel_name')
-    
+
     if not selected_channel_id or not selected_channel_name:
         return "Please select a channel.", 400
-    
+
     try:
         # Store Slack integration in database
         db = ldb()
         cur = db.cursor()
-        
+
         # Check if integration already exists for this team
         existing = db.get_data("""
-            SELECT slack_integration_id FROM project_slack_integrations 
+            SELECT slack_integration_id FROM project_slack_integrations
             WHERE project_name = %s AND slack_team_id = %s
         """, (project_name, oauth_data['team_id']))
-        
+
         if existing:
             # Update existing integration
             cur.execute("""
-                UPDATE project_slack_integrations 
+                UPDATE project_slack_integrations
                 SET slack_access_token = %s, slack_team_name = %s, slack_channel_id = %s, slack_channel_name = %s
                 WHERE project_name = %s AND slack_team_id = %s
-            """, (oauth_data['access_token'], oauth_data['team_name'], selected_channel_id, selected_channel_name, 
+            """, (oauth_data['access_token'], oauth_data['team_name'], selected_channel_id, selected_channel_name,
                   project_name, oauth_data['team_id']))
         else:
             # Create new integration
             cur.execute("""
-                INSERT INTO project_slack_integrations 
+                INSERT INTO project_slack_integrations
                 (project_name, slack_team_id, slack_team_name, slack_channel_id, slack_channel_name, slack_access_token, github_user)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (project_name, oauth_data['team_id'], oauth_data['team_name'], selected_channel_id, selected_channel_name, 
+            """, (project_name, oauth_data['team_id'], oauth_data['team_name'], selected_channel_id, selected_channel_name,
                   oauth_data['access_token'], session.get("gh_user")))
-        
+
         db.commit()
-        
+
         # Clean up session
         session.pop('slack_oauth_data', None)
         session.pop('slack_auth_project', None)
-        
+
         return redirect(url_for('project_settings', project_name=project_name))
-        
+
     except Exception as e:
         app.logger.error(f"Failed to save Slack integration: {e}")
         return f"Failed to save integration: {str(e)}", 500
@@ -667,15 +676,15 @@ def delete_slack_integration(project_name, integration_id):
     """Delete a Slack integration."""
     db = ldb()
     cur = db.cursor()
-    
+
     # Permission check and delete
     cur.execute("""
         DELETE FROM project_slack_integrations
-        WHERE slack_integration_id = %s 
-        AND project_name = %s 
+        WHERE slack_integration_id = %s
+        AND project_name = %s
         AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)
     """, (integration_id, project_name, session.get("gh_user")))
-    
+
     db.commit()
     return redirect(url_for('project_settings', project_name=project_name))
 
@@ -685,22 +694,22 @@ def update_slack_channel(project_name, integration_id):
     """Update Slack channel for an integration."""
     channel_id = request.form.get('channel_id')
     channel_name = request.form.get('channel_name')
-    
+
     if not channel_id or not channel_name:
         return "Missing channel information", 400
-    
+
     db = ldb()
     cur = db.cursor()
-    
+
     # Update channel information
     cur.execute("""
-        UPDATE project_slack_integrations 
+        UPDATE project_slack_integrations
         SET slack_channel_id = %s, slack_channel_name = %s
-        WHERE slack_integration_id = %s 
-        AND project_name = %s 
+        WHERE slack_integration_id = %s
+        AND project_name = %s
         AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)
     """, (channel_id, channel_name, integration_id, project_name, session.get("gh_user")))
-    
+
     db.commit()
     return redirect(url_for('project_settings', project_name=project_name))
 
@@ -880,7 +889,7 @@ def cron():
         # Send Slack notifications
         slack_integrations = ldb().get_data("""
             SELECT slack_access_token, slack_channel_id, slack_channel_name
-            FROM project_slack_integrations 
+            FROM project_slack_integrations
             WHERE project_name = %s
         """, (project_name,))
 
@@ -893,7 +902,7 @@ def cron():
             for integration in slack_integrations:
                 try:
                     slack_client = WebClient(token=integration["slack_access_token"])
-                    
+
                     # Create Slack message
                     blocks = [
                         {
@@ -925,13 +934,13 @@ def cron():
                             ]
                         }
                     ]
-                    
+
                     # Add crash dump snippet if available
                     if dump and len(dump.strip()) > 0:
                         crash_snippet = dump[:1000]
                         if len(dump) > 1000:
                             crash_snippet += "..."
-                        
+
                         blocks.append({
                             "type": "section",
                             "text": {
@@ -939,7 +948,7 @@ def cron():
                                 "text": f"*Crash Dump (first 1000 chars):*\n```{crash_snippet}```"
                             }
                         })
-                    
+
                     # Add action button
                     blocks.append({
                         "type": "actions",
@@ -955,13 +964,13 @@ def cron():
                             }
                         ]
                     })
-                    
+
                     response = slack_client.chat_postMessage(
                         channel=integration["slack_channel_id"],
                         blocks=blocks,
                         text=f"ESP Crash detected in {crash['project_name']} (v{crash['project_ver']})"
                     )
-                    
+
                     if response["ok"]:
                         app.logger.info(f"Successfully sent Slack notification to #{integration['slack_channel_name']} for crash {crash['crash_id']}")
                     else:
@@ -987,7 +996,7 @@ def cron():
                                 app.logger.error(f"Bot not in channel #{integration['slack_channel_name']} and auto-join failed for crash {crash['crash_id']}: {join_error}")
                         else:
                             app.logger.error(f"Slack API returned error for #{integration['slack_channel_name']} crash {crash['crash_id']}: {error_msg}")
-                        
+
                 except SlackApiError as e:
                     app.logger.error(f"Failed to send Slack notification to #{integration['slack_channel_name']} for crash {crash['crash_id']}: {e}")
                 except Exception as e:
@@ -1369,7 +1378,7 @@ def upload_elf():
 def test_slack_integration(project_name):
     """Test Slack integration by sending a test message."""
     db = ldb()
-    
+
     # Permission check
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
@@ -1377,33 +1386,33 @@ def test_slack_integration(project_name):
     """, (project_name, session.get("gh_user")))
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
-    
+
     # Get Slack integrations
     slack_integrations = db.get_data("""
         SELECT slack_access_token, slack_channel_id, slack_channel_name, slack_team_id, slack_team_name
-        FROM project_slack_integrations 
+        FROM project_slack_integrations
         WHERE project_name = %s
     """, (project_name,))
-    
+
     if not slack_integrations:
         return "No Slack integrations found for this project.", 404
-    
+
     results = []
     debug_info = []
     test_url = external_url_for('project_settings', project_name=project_name)
-    
+
     app.logger.info(f"Generated test URL: {test_url}")
-    
+
     for integration in slack_integrations:
         channel_name = integration['slack_channel_name']
         channel_id = integration['slack_channel_id']
         team_name = integration.get('slack_team_name', 'Unknown')
-        
+
         debug_info.append(f"Testing integration for team: {team_name}, channel: #{channel_name} (ID: {channel_id})")
-        
+
         try:
             slack_client = WebClient(token=integration["slack_access_token"])
-            
+
             # First, let's check if we can access channel info
             try:
                 channel_info = slack_client.conversations_info(channel=channel_id)
@@ -1415,10 +1424,10 @@ def test_slack_integration(project_name):
                     debug_info.append(f"❌ Failed to get channel info: {channel_info.get('error', 'Unknown error')}")
             except Exception as info_error:
                 debug_info.append(f"❌ Error getting channel info: {info_error}")
-            
+
             # Now try to send the message
             debug_info.append(f"Attempting to send message to #{channel_name}...")
-            
+
             response = slack_client.chat_postMessage(
                 channel=channel_id,
                 blocks=[
@@ -1453,10 +1462,10 @@ def test_slack_integration(project_name):
                 ],
                 text=f"ESP-Crash test message for {project_name}"
             )
-            
+
             # Log the full response for debugging
             debug_info.append(f"Slack API Response: {response}")
-            
+
             if response["ok"]:
                 message_ts = response.get('ts', 'Unknown')
                 workspace_name = integration.get('slack_team_name', 'Unknown')
@@ -1519,7 +1528,7 @@ def test_slack_integration(project_name):
                     results.append(f"❌ Authentication failed for #{integration['slack_channel_name']}: Please reconnect the Slack integration")
                 else:
                     results.append(f"❌ Failed to send to #{integration['slack_channel_name']}: {error_msg}")
-                
+
         except SlackApiError as e:
             error_msg = str(e)
             if 'not_in_channel' in error_msg:
@@ -1532,11 +1541,11 @@ def test_slack_integration(project_name):
                 results.append(f"❌ Slack API error for #{integration['slack_channel_name']}: {e}")
         except Exception as e:
             results.append(f"❌ Unexpected error for #{integration['slack_channel_name']}: {e}")
-    
+
     # Check for success and "not_in_channel" patterns
     has_success = any('✅' in result for result in results)
     has_not_in_channel = any('not_in_channel' in result for result in results)
-    
+
     return render_template('slack_test_results.html',
                            project_name=project_name,
                            results=results,
@@ -1549,7 +1558,7 @@ def test_slack_integration(project_name):
 def verify_slack_integration(project_name):
     """Verify Slack integration settings and permissions."""
     db = ldb()
-    
+
     # Permission check
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
@@ -1557,26 +1566,26 @@ def verify_slack_integration(project_name):
     """, (project_name, session.get("gh_user")))
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
-    
+
     # Get Slack integrations with enhanced info
     slack_integrations = db.get_data("""
         SELECT slack_integration_id, slack_access_token, slack_channel_id, slack_channel_name, slack_team_name, slack_team_id
-        FROM project_slack_integrations 
+        FROM project_slack_integrations
         WHERE project_name = %s
     """, (project_name,))
-    
+
     if not slack_integrations:
         return render_template('slack_verification.html',
                                project_name=project_name,
                                integrations=[],
                                verification_results=["No Slack integrations found for this project."])
-    
+
     verification_results = []
     db_info = []
-    
+
     # Prepare integration data with validation status
     integrations_with_status = []
-    
+
     for integration in slack_integrations:
         integration_data = {
             'id': integration['slack_integration_id'],
@@ -1585,12 +1594,12 @@ def verify_slack_integration(project_name):
             'channel_id': integration['slack_channel_id'],
             'bot_valid': False
         }
-        
+
         verification_results.append(f"Verifying integration for {integration.get('slack_team_name', 'Unknown Team')}")
-        
+
         try:
             slack_client = WebClient(token=integration["slack_access_token"])
-            
+
             # Test auth
             auth_test = slack_client.auth_test()
             if auth_test["ok"]:
@@ -1599,7 +1608,7 @@ def verify_slack_integration(project_name):
                 verification_results.append(f"   Bot User ID: {auth_test.get('user_id', 'Unknown')}")
                 verification_results.append(f"   Team: {auth_test.get('team', 'Unknown')}")
                 verification_results.append(f"   User: {auth_test.get('user', 'Unknown')}")
-                
+
                 db_info.append(f"Integration ID: {integration['slack_integration_id']}")
                 db_info.append(f"Team ID: {integration.get('slack_team_id', 'Unknown')}")
                 db_info.append(f"Channel ID: {integration['slack_channel_id']}")
@@ -1607,7 +1616,7 @@ def verify_slack_integration(project_name):
             else:
                 verification_results.append(f"❌ Auth test failed: {auth_test.get('error', 'Unknown')}")
                 continue
-            
+
             # Check channel info
             channel_info = slack_client.conversations_info(channel=integration["slack_channel_id"])
             if channel_info["ok"]:
@@ -1620,12 +1629,12 @@ def verify_slack_integration(project_name):
                 verification_results.append(f"   Is Archived: {channel.get('is_archived', False)}")
             else:
                 verification_results.append(f"❌ Channel info failed: {channel_info.get('error', 'Unknown')}")
-                
+
         except Exception as e:
             verification_results.append(f"❌ Verification error: {e}")
-        
+
         integrations_with_status.append(integration_data)
-    
+
     return render_template('slack_verification.html',
                            project_name=project_name,
                            integrations=integrations_with_status,
