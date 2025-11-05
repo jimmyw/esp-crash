@@ -267,6 +267,9 @@ def create_project():
 @login_required
 def list_builds(project_name):
     """List available build files for a project."""
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 50))
+
     builds = ldb().get_data("""
         SELECT
             elf_file.elf_file_id,
@@ -275,8 +278,9 @@ def list_builds(project_name):
             elf_file.project_ver,
             elf_file.project_alias,
             length(elf_file.elf_file) AS size,
+            COUNT(crash) AS crash_count,
+            count(elf_file) OVER() AS full_count
 
-            COUNT(crash) AS crash_count
         FROM
             elf_file
         JOIN
@@ -293,8 +297,13 @@ def list_builds(project_name):
             elf_file.project_ver,
             elf_file.project_alias
         ORDER BY date DESC
-    """, (project_name, session["gh_user"],))
-    return render_template('builds.html', elfs = builds, project_name = project_name)
+        LIMIT
+            %s
+        OFFSET
+            %s
+
+    """, (project_name, session["gh_user"], limit, offset))
+    return render_template('builds.html', elfs = builds, project_name = project_name, limit=limit, offset=offset,  full_count = builds[0]["full_count"] if len(builds) > 0 else 0)
 
 @app.route('/projects/<project_name>/acl')
 @login_required

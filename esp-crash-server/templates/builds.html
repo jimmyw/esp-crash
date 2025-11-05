@@ -63,5 +63,22 @@
         </tbody>
         {% endfor %}
     </table>
+
+    <div class="w-full text-sm text-left text-gray-500 text-center" style="margin: 50px 0px;">
+        <h2>
+            {% if offset > 0 %}
+            <a href="{{ url_for(request.endpoint, project_name=project_name, limit=limit, offset=offset - limit) }}" class="p-2 bg-blue-500 text-white rounded-md">
+                Previous
+            </a>
+            {% endif %}
+            &nbsp; Page {{ (offset // limit) + 1 }} of {{ (full_count // limit) + (1 if full_count % limit > 0 else 0) }} &nbsp;
+            {% if offset + limit < full_count %}
+            <a href="{{ url_for(request.endpoint, project_name=project_name, limit=limit, offset=offset + limit) }}" class="p-2 bg-blue-500 text-white rounded-md">
+                Next
+            </a>
+            {% endif %}
+            </h2>
+    </div>
+
 </div>
 {% endblock %}
