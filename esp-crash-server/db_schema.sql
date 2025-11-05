@@ -61,3 +61,6 @@ CREATE TABLE project_slack_integrations (
 
 CREATE INDEX idx_elf_file_project ON elf_file (project_name, project_ver);
 CREATE INDEX idx_elf_file_project_name ON elf_file (project_name);
+CREATE INDEX idx_crash_project_name_ver ON crash (project_name, project_ver);
+CREATE INDEX idx_project_auth_lookup ON project_auth (project_name, github);
+CREATE INDEX idx_elf_file_project_date ON elf_file (project_name, date DESC);

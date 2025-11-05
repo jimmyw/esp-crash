@@ -283,29 +283,24 @@ def list_builds(project_name):
             elf_file.project_ver,
             elf_file.project_alias,
             elf_file.file_size,
-            COUNT(crash) AS crash_count,
-            count(elf_file) OVER() AS full_count
-
+            COALESCE(crash_counts.crash_count, 0) AS crash_count,
+            count(*) OVER() AS full_count
         FROM
             elf_file
         JOIN
             project_auth USING (project_name)
-        LEFT JOIN
-            crash USING (project_name, project_ver)
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) as crash_count
+            FROM crash
+            WHERE crash.project_name = elf_file.project_name
+            AND crash.project_ver = elf_file.project_ver
+        ) crash_counts ON true
         WHERE
             elf_file.project_name = %s AND
             project_auth.github = %s
-        GROUP BY
-            elf_file.elf_file_id,
-            elf_file.date,
-            elf_file.project_name,
-            elf_file.project_ver,
-            elf_file.project_alias
-        ORDER BY date DESC
-        LIMIT
-            %s
-        OFFSET
-            %s
+        ORDER BY elf_file.date DESC
+        LIMIT %s
+        OFFSET %s
 
     """, (project_name, session["gh_user"], limit, offset))
     return render_template('builds.html', elfs = builds, project_name = project_name, limit=limit, offset=offset,  full_count = builds[0]["full_count"] if len(builds) > 0 else 0)
