@@ -282,7 +282,7 @@ def list_builds(project_name):
             elf_file.project_name,
             elf_file.project_ver,
             elf_file.project_alias,
-            length(elf_file.elf_file) AS size,
+            elf_file.file_size,
             COUNT(crash) AS crash_count,
             count(elf_file) OVER() AS full_count
 
@@ -1378,8 +1378,8 @@ def upload_elf():
 
     # Execute the SQL query to insert the compressed file content into the database
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO elf_file (date, project_name, project_ver, elf_file) VALUES (NOW(), %s, %s, %s)',
-    (project_name, project_ver, psycopg2.Binary(compressed_content),))
+    cursor.execute('INSERT INTO elf_file (date, project_name, project_ver, elf_file, file_size) VALUES (NOW(), %s, %s, %s, %s)',
+    (project_name, project_ver, psycopg2.Binary(compressed_content), len(compressed_content)))
 
     # Commit the changes and close the connection
     conn.commit()
