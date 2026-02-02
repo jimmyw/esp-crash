@@ -738,11 +738,18 @@ def update_slack_channel(project_name, integration_id):
 @app.route('/elf/delete/<elf_file_id>')
 @login_required
 def delete_elf(elf_file_id):
+    # Select project_name from the deleted elf_file to redirect appropriately after delete
+    project_data = ldb().get_data("SELECT project_name FROM elf_file WHERE elf_file_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (elf_file_id, session["gh_user"]))
+    if len(project_data) < 1:
+        return "Not found", 404
+    project_name = project_data[0]["project_name"]
+
     """Delete an uploaded ELF build."""
     c = ldb().cursor()
     c.execute("DELETE FROM elf_file WHERE elf_file_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (elf_file_id, session["gh_user"]))
     conn.commit()
-    return redirect("/elf", code=302)
+
+    return redirect(url_for('list_builds', project_name=project_name), code=302)
 
 @app.route('/crash/<crash_id>')
 @login_required
