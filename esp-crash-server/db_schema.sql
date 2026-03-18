@@ -1,9 +1,8 @@
-DROP TABLE crash;
-CREATE TABLE device (device_id SERIAL PRIMARY KEY, ext_device_id TEXT UNIQUE, alias TEXT);
-CREATE TABLE crash (crash_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, crash_dmp BYTEA, device_id INTEGER, textsearch TSVECTOR, dump TEXT REFERENCES device(device_id) NOT NULL);
-CREATE TABLE elf_file (elf_file_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, elf_file BYTEA, file_size INTEGER, project_alias TEXT);
-CREATE TABLE project_auth (project_auth_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, github TEXT);
-CREATE INDEX textsearch_idx ON crash USING GIN (textsearch);
+CREATE TABLE IF NOT EXISTS device (device_id SERIAL PRIMARY KEY, ext_device_id TEXT UNIQUE, alias TEXT);
+CREATE TABLE IF NOT EXISTS crash (crash_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, crash_dmp BYTEA, device_id INTEGER REFERENCES device(device_id) NOT NULL, textsearch TSVECTOR, dump TEXT);
+CREATE TABLE IF NOT EXISTS elf_file (elf_file_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, elf_file BYTEA, file_size INTEGER, project_alias TEXT);
+CREATE TABLE IF NOT EXISTS project_auth (project_auth_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, github TEXT);
+CREATE INDEX IF NOT EXISTS textsearch_idx ON crash USING GIN (textsearch);
 
 
 CREATE OR REPLACE FUNCTION update_textsearch() RETURNS TRIGGER AS $$
@@ -42,12 +41,13 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+DROP TRIGGER IF EXISTS trigger_update_textsearch ON crash;
 CREATE TRIGGER trigger_update_textsearch
 BEFORE INSERT OR UPDATE ON crash
 FOR EACH ROW EXECUTE FUNCTION update_textsearch();
 
-CREATE TABLE project_webhooks (webhook_id SERIAL PRIMARY KEY, project_name TEXT, webhook_url TEXT);
-CREATE TABLE project_slack_integrations (
+CREATE TABLE IF NOT EXISTS project_webhooks (webhook_id SERIAL PRIMARY KEY, project_name TEXT, webhook_url TEXT);
+CREATE TABLE IF NOT EXISTS project_slack_integrations (
     slack_integration_id SERIAL PRIMARY KEY,
     project_name TEXT,
     slack_team_id TEXT,
