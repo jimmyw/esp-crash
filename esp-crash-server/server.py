@@ -148,8 +148,13 @@ def ldb():
     """Lazy-initialize and return the database connection."""
     global conn
     if not conn:
-        conn = DBManager(password_file='/run/secrets/db-password', host='192.168.10.92', user='esp-crash', database='esp-crash')
-    return conn;
+        conn = DBManager(
+            password_file=os.environ.get('POSTGRES_PASSWORD_FILE', '/run/secrets/db-password'),
+            host=os.environ.get('POSTGRES_HOST', '192.168.10.92'),
+            user=os.environ.get('POSTGRES_USER', 'esp-crash'),
+            database=os.environ.get('POSTGRES_DB', 'esp-crash'),
+        )
+    return conn
 
 @app.route("/dashboard")
 @login_required
