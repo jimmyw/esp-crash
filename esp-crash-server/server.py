@@ -158,6 +158,12 @@ def ldb():
         )
     return conn
 
+@app.route("/health")
+def health():
+    """Kubernetes liveness/readiness probe endpoint."""
+    return "", 200
+
+
 @app.route("/dashboard")
 @login_required
 def dashboard():
