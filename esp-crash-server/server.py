@@ -25,16 +25,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DBManager:
-    def __init__(self, database='example', host="db", user="root", password_file=None):
-        pf = open(password_file, 'r')
+    def __init__(self, database='example', host="db", user="root", password=None, password_file=None):
+        if password is None and password_file is not None:
+            with open(password_file, 'r') as pf:
+                password = pf.read().strip()
         logger.info("Connecting to database %s at %s as user %s", database, host, user)
         self.connection = psycopg2.connect(
             user=user,
-            password=pf.read(),
+            password=password,
             host=host,
             database=database
         )
-        pf.close()
 
     def cursor(self):
         self.connection.rollback()
@@ -149,7 +150,8 @@ def ldb():
     global conn
     if not conn:
         conn = DBManager(
-            password_file=os.environ.get('POSTGRES_PASSWORD_FILE', '/run/secrets/db-password'),
+            password_file=os.environ.get('POSTGRES_PASSWORD_FILE'),
+            password=os.environ.get('POSTGRES_PASSWORD'),
             host=os.environ.get('POSTGRES_HOST', '192.168.10.92'),
             user=os.environ.get('POSTGRES_USER', 'esp-crash'),
             database=os.environ.get('POSTGRES_DB', 'esp-crash'),
