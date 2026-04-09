@@ -1,0 +1,56 @@
+services:
+
+# nginx:
+#   image: nginx:1.25
+#   ports:
+#     - "80:80"
+#     - "443:443"
+#   volumes:
+#     - ./data/nginx:/etc/nginx/conf.d
+#     - ./data/local:/var/www/local
+#   depends_on:
+#     - backend
+#   restart: always
+#   command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+
+  backend:
+    build: esp-crash-server
+    restart: always
+    secrets:
+      - db-password
+    ports:
+      - 8000:8000
+    depends_on:
+      - postgres
+    environment:
+      EXTERNAL_URL: "https://esp-crash.wennlund.nu"
+      APP_SECRET_KEY: aaaaaaaaaaaaaaaaaaaa
+      GITHUB_OAUTH_CLIENT_ID: aaaaaaaaaaaaaaaaaaaa
+      GITHUB_OAUTH_CLIENT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      SLACK_CLIENT_ID: "aaaaaaaaaaaaaaaaaaa"
+      SLACK_CLIENT_SECRET: "aaaaaaaaaaaaaaaaaaaaaaa"
+
+
+  cron:
+    build: esp-crash-server
+    restart: always
+    command: bash -c "while sleep 10; do curl -s 'backend:8000/cron'; done"
+
+  postgres:
+    image: postgres:15
+    restart: always
+    shm_size: '2gb'
+    environment:
+      POSTGRES_USER: esp-crash
+      POSTGRES_PASSWORD: crash123
+      POSTGRES_DB: esp-crash
+    volumes:
+      - esp_postgres:/var/lib/postgresql/data/
+
+secrets:
+  db-password:
+    file: db/password.txt
+
+volumes:
+  esp_postgres:
+
