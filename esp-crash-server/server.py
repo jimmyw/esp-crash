@@ -67,8 +67,16 @@ app.wsgi_app = ProxyFix(
 
 app.secret_key = os.environ["APP_SECRET_KEY"]
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1000 * 1000
-app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
-app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
+app.config["AUTH_TYPE"] = os.environ.get("AUTH_TYPE", "none").lower()
+if app.config["AUTH_TYPE"] not in ("none", "github"):
+    raise ValueError("AUTH_TYPE must be either 'none' or 'github'")
+
+if app.config["AUTH_TYPE"] == "github":
+    app.config["GITHUB_OAUTH_CLIENT_ID"] = os.environ["GITHUB_OAUTH_CLIENT_ID"]
+    app.config["GITHUB_OAUTH_CLIENT_SECRET"] = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
+else:
+    app.config["GITHUB_OAUTH_CLIENT_ID"] = ""
+    app.config["GITHUB_OAUTH_CLIENT_SECRET"] = ""
 app.config["SLACK_CLIENT_ID"] = os.environ.get("SLACK_CLIENT_ID", "")
 app.config["SLACK_CLIENT_SECRET"] = os.environ.get("SLACK_CLIENT_SECRET", "")
 
@@ -101,8 +109,25 @@ def external_url_for(endpoint, **values):
             return url_for(endpoint, _external=True, **values)
 
 
+def github_auth_enabled():
+    return app.config["AUTH_TYPE"] == "github"
+
+
+def auth_clause(column_name="project_auth.github"):
+    if github_auth_enabled():
+        return f"{column_name} = %s", (session.get("gh_user"),)
+    return "TRUE", ()
+
+
+def auth_project_in_clause(project_column="project_name"):
+    if github_auth_enabled():
+        return f"{project_column} IN (SELECT project_name FROM project_auth WHERE github = %s)", (session.get("gh_user"),)
+    return "TRUE", ()
+
+
 def render_template(template_name, **context):
     """Render a template with project list context."""
+    auth_where, auth_args = auth_clause("project_auth.github")
     projects = ldb().get_data("""
         SELECT
             project_name,
@@ -110,10 +135,10 @@ def render_template(template_name, **context):
         FROM
             project_auth
         WHERE
-            project_auth.github = %s
+            """ + auth_where + """
         ORDER BY
             project_name ASC
-    """, (session["gh_user"],))
+    """, auth_args)
     return app.jinja_env.get_template(template_name).render(projects=projects, **context)
 
 
@@ -123,6 +148,11 @@ def login_required(f):
     """Decorator to require GitHub authentication."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        if app.config["AUTH_TYPE"] == "none":
+            # Keep authorization checks and SQL filters working in no-auth mode.
+            session.setdefault("gh_user", "none")
+            return f(*args, **kwargs)
+
         if not github.authorized:
             return redirect(url_for("github.login"))
         if "gh_user" not in session:
@@ -190,9 +220,8 @@ def list_project_crashes(project_name):
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
 
-
-    where_part = "project_auth.github = %s "
-    args = (session["gh_user"],)
+    where_part, args = auth_clause("project_auth.github")
+    where_part += " "
     if project_name:
         where_part += "AND crash.project_name = %s "
         args = args + (project_name,)
@@ -259,6 +288,7 @@ def create_project():
         return "Missing project_name", 400
     c = ldb().cursor()
 
+    auth_where, auth_args = auth_clause("project_auth.github")
     projects = ldb().get_data("""
         SELECT
             project_name
@@ -266,8 +296,8 @@ def create_project():
             project_auth
         WHERE
             project_name = %s AND
-            project_auth.github = %s
-    """, (project_name, session["gh_user"],))
+            """ + auth_where + """
+    """, (project_name,) + auth_args)
     if len(projects) > 0:
         return "Project already registred, ask admin for invite", 400
     c.execute("""
@@ -288,6 +318,7 @@ def list_builds(project_name):
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
 
+    auth_where, auth_args = auth_clause("project_auth.github")
     builds = ldb().get_data("""
         SELECT
             elf_file.elf_file_id,
@@ -310,12 +341,12 @@ def list_builds(project_name):
         ) crash_counts ON true
         WHERE
             elf_file.project_name = %s AND
-            project_auth.github = %s
+            """ + auth_where + """
         ORDER BY elf_file.date DESC
         LIMIT %s
         OFFSET %s
 
-    """, (project_name, session["gh_user"], limit, offset))
+    """, (project_name,) + auth_args + (limit, offset))
     return render_template('builds.html', elfs = builds, project_name = project_name, limit=limit, offset=offset,  full_count = builds[0]["full_count"] if len(builds) > 0 else 0)
 
 @app.route('/projects/<project_name>/acl')
@@ -329,16 +360,17 @@ def list_acl(project_name):
 def create_acl(project_name):
     """Add a GitHub user to a project's access list."""
     c = ldb().cursor()
+    auth_where, auth_args = auth_clause("github")
     acls = ldb().get_data("""
         SELECT
             project_name
         FROM
             project_auth
         WHERE
-            project_name IN (SELECT project_name FROM project_auth WHERE github = %s) AND
+            """ + auth_where + """ AND
             project_name = %s
         LIMIT 1
-    """, (session["gh_user"], project_name,))
+    """, auth_args + (project_name,))
 
     if len(acls) < 1:
         return "No access to create for this project", 500
@@ -375,14 +407,15 @@ def create_acl(project_name):
 def delete_acl(project_name, github):
     """Remove a GitHub user from a project's access list."""
     c = ldb().cursor()
+    auth_where, auth_args = auth_clause("github")
     c.execute("""
         DELETE FROM
             project_auth
         WHERE
             github = %s AND
             project_name = %s AND
-            project_name IN (SELECT project_name FROM project_auth WHERE github = %s)
-    """, (github, project_name, session["gh_user"]))
+            """ + auth_where + """
+    """, (github, project_name) + auth_args)
     conn.commit()
     return redirect(url_for("project_settings", project_name = project_name), code=302)
 
@@ -393,10 +426,11 @@ def project_settings(project_name):
     """Display and manage settings for a specific project."""
     db = ldb()
     # Verify user has access to this project
+    auth_where, auth_args = auth_clause("github")
     allowed = db.get_data("""
         SELECT project_name FROM project_auth
-        WHERE project_name = %s AND github = %s
-    """, (project_name, session.get("gh_user")))
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
     if not allowed:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -434,10 +468,11 @@ def project_webhooks_admin(project_name):
     cur = db.cursor()
 
     # Permission check: Ensure user is authorized for this project
+    auth_where, auth_args = auth_clause("github")
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
-        WHERE project_name = %s AND github = %s
-    """, (project_name, session.get("gh_user")))
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
     if not auth_check:
         return "Forbidden: You do not have access to this project's webhooks.", 403
 
@@ -487,10 +522,11 @@ def slack_auth(project_name):
     db = ldb()
 
     # Permission check: Ensure user is authorized for this project
+    auth_where, auth_args = auth_clause("github")
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
-        WHERE project_name = %s AND github = %s
-    """, (project_name, session.get("gh_user")))
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -596,10 +632,11 @@ def slack_channel_selection(project_name):
 
     # Permission check
     db = ldb()
+    auth_where, auth_args = auth_clause("github")
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
-        WHERE project_name = %s AND github = %s
-    """, (project_name, session.get("gh_user")))
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -700,12 +737,13 @@ def delete_slack_integration(project_name, integration_id):
     cur = db.cursor()
 
     # Permission check and delete
+    auth_where, auth_args = auth_clause("github")
     cur.execute("""
         DELETE FROM project_slack_integrations
         WHERE slack_integration_id = %s
         AND project_name = %s
-        AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)
-    """, (integration_id, project_name, session.get("gh_user")))
+        AND """ + auth_where + """
+    """, (integration_id, project_name) + auth_args)
 
     db.commit()
     return redirect(url_for('project_settings', project_name=project_name))
@@ -724,13 +762,14 @@ def update_slack_channel(project_name, integration_id):
     cur = db.cursor()
 
     # Update channel information
+    auth_where, auth_args = auth_clause("github")
     cur.execute("""
         UPDATE project_slack_integrations
         SET slack_channel_id = %s, slack_channel_name = %s
         WHERE slack_integration_id = %s
         AND project_name = %s
-        AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)
-    """, (channel_id, channel_name, integration_id, project_name, session.get("gh_user")))
+        AND """ + auth_where + """
+    """, (channel_id, channel_name, integration_id, project_name) + auth_args)
 
     db.commit()
     return redirect(url_for('project_settings', project_name=project_name))
@@ -739,14 +778,15 @@ def update_slack_channel(project_name, integration_id):
 @login_required
 def delete_elf(elf_file_id):
     # Select project_name from the deleted elf_file to redirect appropriately after delete
-    project_data = ldb().get_data("SELECT project_name FROM elf_file WHERE elf_file_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (elf_file_id, session["gh_user"]))
+    auth_where, auth_args = auth_project_in_clause("project_name")
+    project_data = ldb().get_data("SELECT project_name FROM elf_file WHERE elf_file_id = %s AND " + auth_where, (elf_file_id,) + auth_args)
     if len(project_data) < 1:
         return "Not found", 404
     project_name = project_data[0]["project_name"]
 
     """Delete an uploaded ELF build."""
     c = ldb().cursor()
-    c.execute("DELETE FROM elf_file WHERE elf_file_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (elf_file_id, session["gh_user"]))
+    c.execute("DELETE FROM elf_file WHERE elf_file_id = %s AND " + auth_where, (elf_file_id,) + auth_args)
     conn.commit()
 
     return redirect(url_for('list_builds', project_name=project_name), code=302)
@@ -763,6 +803,7 @@ def show_project_crash(project_name, crash_id):
     """Display crash details for a project."""
 
     # Fetch crash data from database
+    auth_where, auth_args = auth_clause("project_auth.github")
     crash = ldb().get_data("""
         SELECT
             crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump
@@ -773,9 +814,9 @@ def show_project_crash(project_name, crash_id):
         JOIN
             device USING (device_id)
         WHERE
-            crash_id = %s AND project_auth.github = %s
+            crash_id = %s AND """ + auth_where + """
         ORDER BY
-            date DESC""", (crash_id, session["gh_user"],))
+            date DESC""", (crash_id,) + auth_args)
     # If no crash data is found, return "Not found"
     if len(crash) != 1:
         return "Not found", 404
@@ -794,6 +835,7 @@ def refresh_crash(project_name, crash_id):
     """Clear cached dump data so it will be reprocessed."""
 
     # Fetch crash data from database
+    auth_where, auth_args = auth_clause("project_auth.github")
     refresh = """
         UPDATE
             crash
@@ -802,11 +844,11 @@ def refresh_crash(project_name, crash_id):
         FROM
             project_auth
         WHERE
-            crash.crash_id = %s AND crash.project_name = project_auth.project_name AND project_auth.github = %s
+            crash.crash_id = %s AND crash.project_name = project_auth.project_name AND """ + auth_where + """
         """
 
     c = ldb().cursor()
-    c.execute(refresh, (crash_id, session["gh_user"],))
+    c.execute(refresh, (crash_id,) + auth_args)
     conn.commit()
 
     return redirect(url_for('show_project_crash', project_name=project_name, crash_id=crash_id))
@@ -1043,6 +1085,7 @@ def download_build(build_id):
     """Download ELF build data as a zip archive."""
 
     # Fetch all elf image data from database that matches this project and version
+    auth_where, auth_args = auth_clause("project_auth.github")
     elf_images = ldb().get_data("""
     SELECT
         elf_file.elf_file_id, elf_file.date, elf_file.project_name, elf_file.project_ver, elf_file.elf_file
@@ -1052,9 +1095,9 @@ def download_build(build_id):
         project_auth USING (project_name)
     WHERE
         elf_file_id = %s AND
-        project_auth.github = %s
+        """ + auth_where + """
 
-    """, (build_id, session["gh_user"],))
+    """, (build_id,) + auth_args)
 
     zipf = tempfile.NamedTemporaryFile(delete=False)
     with zipfile.ZipFile(zipf.name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -1099,6 +1142,7 @@ def download_crash(crash_id):
     """Download a crash dump along with related ELF files."""
 
     # Fetch crash data from database
+    auth_where, auth_args = auth_clause("project_auth.github")
     crash = ldb().get_data("""
         SELECT
             crash.crash_id, crash.date, crash.project_name, device.ext_device_id, crash.project_ver, crash.crash_dmp
@@ -1109,9 +1153,9 @@ def download_crash(crash_id):
         JOIN
             device USING (device_id)
         WHERE
-            crash_id = %s AND project_auth.github = %s
+            crash_id = %s AND """ + auth_where + """
         ORDER BY
-            date DESC""", (crash_id, session["gh_user"],))
+            date DESC""", (crash_id,) + auth_args)
     # If no crash data is found, return "Not found"
     if len(crash) != 1:
         return "Not found", 404
@@ -1174,7 +1218,8 @@ def download_crash(crash_id):
 def delete_crash(project_name, crash_id):
     """Delete a crash entry."""
     c = ldb().cursor()
-    c.execute("DELETE FROM crash WHERE crash_id = %s AND project_name IN (SELECT project_name FROM project_auth WHERE github = %s)", (crash_id, session["gh_user"]))
+    auth_where, auth_args = auth_project_in_clause("project_name")
+    c.execute("DELETE FROM crash WHERE crash_id = %s AND " + auth_where, (crash_id,) + auth_args)
     conn.commit()
     return redirect(f"/projects/{project_name}", code=302)
 
@@ -1409,10 +1454,11 @@ def test_slack_integration(project_name):
     db = ldb()
 
     # Permission check
+    auth_where, auth_args = auth_clause("github")
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
-        WHERE project_name = %s AND github = %s
-    """, (project_name, session.get("gh_user")))
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -1589,10 +1635,11 @@ def verify_slack_integration(project_name):
     db = ldb()
 
     # Permission check
+    auth_where, auth_args = auth_clause("github")
     auth_check = db.get_data("""
         SELECT project_name FROM project_auth
-        WHERE project_name = %s AND github = %s
-    """, (project_name, session.get("gh_user")))
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
