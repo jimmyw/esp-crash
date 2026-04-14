@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DBManager:
-    def __init__(self, database='example', host="db", user="root", password=None, password_file=None):
+    def __init__(self, database='example', host="db", user="root", password=None, password_file=None, sslmode=None):
         if password is None and password_file is not None:
             with open(password_file, 'r') as pf:
                 password = pf.read().strip()
@@ -34,7 +34,8 @@ class DBManager:
             user=user,
             password=password,
             host=host,
-            database=database
+            database=database,
+            sslmode=sslmode
         )
 
     def cursor(self):
@@ -184,6 +185,7 @@ def ldb():
             password=os.environ.get('POSTGRES_PASSWORD'),
             host=os.environ.get('POSTGRES_HOST', '192.168.10.92'),
             user=os.environ.get('POSTGRES_USER', 'esp-crash'),
+            sslmode=os.environ.get('POSTGRES_SSLMODE', 'prefer'),
             database=os.environ.get('POSTGRES_DB', 'esp-crash'),
         )
     return conn
