@@ -189,7 +189,11 @@ def ldb():
         logger.info("POSTGRES_DB: %s", os.environ.get('POSTGRES_DB'))
         logger.info("POSTGRES_PORT: %s", os.environ.get('POSTGRES_PORT', '5432'))
         logger.info("POSTGRES_PASSWORD_FILE: %s", os.environ.get('POSTGRES_PASSWORD_FILE'))
-        logger.info("POSTGRES_PASSWORD: %s", os.environ.get('POSTGRES_PASSWORD'))
+        postgres_password = os.environ.get('POSTGRES_PASSWORD')
+        if postgres_password:
+            logger.info("POSTGRES_PASSWORD: [REDACTED length=%d]", len(postgres_password))
+        else:
+            logger.info("POSTGRES_PASSWORD: [NOT SET]")
         logger.info("POSTGRES_SSLMODE: %s", os.environ.get('POSTGRES_SSLMODE'))
 
         conn = DBManager(
