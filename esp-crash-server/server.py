@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DBManager:
-    def __init__(self, database='example', host="db", user="root", password=None, password_file=None, sslmode=None):
+    def __init__(self, database='example', host="db", port=5432, user="root", password=None, password_file=None, sslmode=None):
         if password is None and password_file is not None:
             with open(password_file, 'r') as pf:
                 password = pf.read().strip()
@@ -34,6 +34,7 @@ class DBManager:
             user=user,
             password=password,
             host=host,
+            port=port,
             database=database,
             sslmode=sslmode
         )
@@ -186,6 +187,7 @@ def ldb():
         logger.info("POSTGRES_HOST: %s", os.environ.get('POSTGRES_HOST'))
         logger.info("POSTGRES_USER: %s", os.environ.get('POSTGRES_USER'))
         logger.info("POSTGRES_DB: %s", os.environ.get('POSTGRES_DB'))
+        logger.info("POSTGRES_PORT: %s", os.environ.get('POSTGRES_PORT', '5432'))
         logger.info("POSTGRES_PASSWORD_FILE: %s", os.environ.get('POSTGRES_PASSWORD_FILE'))
         logger.info("POSTGRES_PASSWORD: %s", os.environ.get('POSTGRES_PASSWORD'))
         logger.info("POSTGRES_SSLMODE: %s", os.environ.get('POSTGRES_SSLMODE'))
@@ -194,6 +196,7 @@ def ldb():
             password_file=os.environ.get('POSTGRES_PASSWORD_FILE'),
             password=os.environ.get('POSTGRES_PASSWORD'),
             host=os.environ.get('POSTGRES_HOST', ''),
+            port=int(os.environ.get('POSTGRES_PORT', '5432')),
             user=os.environ.get('POSTGRES_USER', 'esp-crash'),
             sslmode=os.environ.get('POSTGRES_SSLMODE', 'prefer'),
             database=os.environ.get('POSTGRES_DB', 'esp-crash'),
