@@ -179,11 +179,21 @@ def handle_chunking():
 def ldb():
     """Lazy-initialize and return the database connection."""
     global conn
+
     if not conn:
+        # For testing, print all credentials
+        logger.info("Initializing database connection with the following parameters:")
+        logger.info("POSTGRES_HOST: %s", os.environ.get('POSTGRES_HOST'))
+        logger.info("POSTGRES_USER: %s", os.environ.get('POSTGRES_USER'))
+        logger.info("POSTGRES_DB: %s", os.environ.get('POSTGRES_DB'))
+        logger.info("POSTGRES_PASSWORD_FILE: %s", os.environ.get('POSTGRES_PASSWORD_FILE'))
+        logger.info("POSTGRES_PASSWORD: %s", os.environ.get('POSTGRES_PASSWORD'))
+        logger.info("POSTGRES_SSLMODE: %s", os.environ.get('POSTGRES_SSLMODE'))
+
         conn = DBManager(
             password_file=os.environ.get('POSTGRES_PASSWORD_FILE'),
             password=os.environ.get('POSTGRES_PASSWORD'),
-            host=os.environ.get('POSTGRES_HOST', '192.168.10.92'),
+            host=os.environ.get('POSTGRES_HOST', ''),
             user=os.environ.get('POSTGRES_USER', 'esp-crash'),
             sslmode=os.environ.get('POSTGRES_SSLMODE', 'prefer'),
             database=os.environ.get('POSTGRES_DB', 'esp-crash'),
