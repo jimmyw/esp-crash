@@ -69,6 +69,7 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels -r requ
 
 WORKDIR /code
 COPY server.py .
+COPY decode_module_coredump.py /code
 COPY templates/ templates/
 
 ENV FLASK_APP=server.py
