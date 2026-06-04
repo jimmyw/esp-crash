@@ -155,6 +155,11 @@ def login_required(f):
             session.setdefault("gh_user", "none")
             return f(*args, **kwargs)
 
+        # If the app previously ran in no-auth mode, clear the sentinel value
+        # so we can repopulate the real GitHub username after OAuth.
+        if session.get("gh_user") == "none":
+            session.pop("gh_user", None)
+
         if not github.authorized:
             return redirect(url_for("github.login"))
         if "gh_user" not in session:
