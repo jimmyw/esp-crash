@@ -76,5 +76,5 @@ ENV FLASK_RUN_PORT=8000
 ENV FLASK_RUN_HOST=0.0.0.0
 
 ENV FLASK_ENV development
-#CMD ["flask", "--app", "server", "run", "--debug"]
-CMD ["gunicorn"  , "-b", "0.0.0.0:8000", "server:app"]
+CMD ["flask", "--app", "server", "run", "--debug"]
+#CMD ["gunicorn"  , "-b", "0.0.0.0:8000", "server:app"]

@@ -29,7 +29,10 @@ services:
       GITHUB_OAUTH_CLIENT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       SLACK_CLIENT_ID: "aaaaaaaaaaaaaaaaaaa"
       SLACK_CLIENT_SECRET: "aaaaaaaaaaaaaaaaaaaaaaa"
-
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: esp-crash
+      POSTGRES_PASSWORD: xxxxx
+      POSTGRES_DB: esp-crash      
 
   cron:
     build: esp-crash-server
