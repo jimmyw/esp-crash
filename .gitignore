@@ -9,5 +9,6 @@ __pycache__
 managed_components/*
 dependencies.lock
 docker-compose.yml
+.env
 data
 db
