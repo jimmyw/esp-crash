@@ -43,6 +43,7 @@ endblock %}
                 {% endif %}
                 <th scope="col" class="px-6 py-3">Project Version</th>
                 <th scope="col" class="px-6 py-3">Device Id</th>
+                <th scope="col" class="px-6 py-3">Modules</th>
                 <th scope="col" class="px-6 py-3"></th>
             </tr>
         </thead>
@@ -74,6 +75,19 @@ endblock %}
                     <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.ext_device_id }}</a>
                 </td>
                 {% endif %}
+                <td class="px-6 py-4">
+                    {% if crash.module_names %}
+                    <div class="flex flex-wrap gap-1">
+                        {% for mod in crash.module_names %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium font-mono bg-indigo-100 text-indigo-800" title="Module referenced by this crash">
+                            <span class="mr-1 text-indigo-500">&#9679;</span>{{ mod }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <span class="text-gray-300">&mdash;</span>
+                    {% endif %}
+                </td>
                 <td class="px-6 py-4">
                     <a href="{{ url_for('delete_crash', project_name=crash.project_name, crash_id=crash.crash_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
                     <a href="{{ url_for('show_device', device_id=crash.device_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>

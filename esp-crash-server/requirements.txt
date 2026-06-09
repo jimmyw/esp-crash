@@ -1,6 +1,7 @@
 Flask
 psycopg2
 esp-coredump
+pyelftools
 gunicorn
 flask_dance
 SQLAlchemy

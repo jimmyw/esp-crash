@@ -61,6 +61,33 @@
     {% endfor %}
     </div>
 </div>
+{% if modules %}
+<div class="w-5/6 mt-4">
+    <h3 class="mb-3 text-lg font-semibold text-slate-900">Modules referenced by this crash</h3>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {% for m in modules %}
+        <div class="p-4 bg-white border border-gray-200 rounded-lg shadow"
+             style="border-left: 4px solid {{ '#22c55e' if m.available else '#ef4444' }};">
+            <div class="flex items-center justify-between">
+                <span class="font-mono font-bold text-slate-900 truncate" title="{{ m.name }}">{{ m.name }}</span>
+                {% if m.available %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap">
+                    <span class="mr-1">&#9679;</span>symbols available
+                </span>
+                {% else %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 whitespace-nowrap">
+                    <span class="mr-1">&#9679;</span>symbols not uploaded
+                </span>
+                {% endif %}
+            </div>
+            <div class="mt-2 text-xs text-gray-500 font-mono break-all">
+                sha1 {{ m.sha1_full }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
 <div
     class="w-5/6 h-5/6 p-8 m-0 border border-gray-200 rounded-lg shadow mt-4 whitespace-pre bg-black text-sm text-white overflow-scroll font-mono">
 

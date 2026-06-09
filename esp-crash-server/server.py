@@ -16,6 +16,7 @@ import requests
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import logging
+import decode_module_coredump as mod_decoder
 
 # Configure logging
 logging.basicConfig(
@@ -236,6 +237,34 @@ def list_projects():
     """Render the landing page listing all projects."""
     return render_template('index.html')
 
+def _module_names_for_dump(crash_dmp):
+    """Best-effort list of module names referenced by a crash dump.
+
+    Used to render the "Modules" tags in the crash list. Parses the on-device
+    module map straight from the dump (independent of whether the crash has
+    been symbolicated yet). Never raises — returns [] on any problem.
+    """
+    if not crash_dmp:
+        return []
+    try:
+        try:
+            decompressed = bz2.decompress(crash_dmp)
+        except IOError:
+            decompressed = crash_dmp
+        dmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".dmp", delete=False) as df:
+                df.write(decompressed)
+                dmp_path = df.name
+            entries = mod_decoder.parse_module_map_from_coredump(dmp_path)
+        finally:
+            if dmp_path:
+                os.unlink(dmp_path)
+        return [e["name"] for e in entries]
+    except Exception:
+        return []
+
+
 @app.route('/projects/<project_name>')
 @login_required
 def list_project_crashes(project_name):
@@ -261,6 +290,7 @@ def list_project_crashes(project_name):
             crash.project_name,
             crash.device_id,
             crash.project_ver,
+            crash.module_names,
             array_agg(elf_file.elf_file_id) FILTER (WHERE elf_file.elf_file_id IS NOT NULL) as elf_file_id,
             array_agg(elf_file.project_alias) as project_alias,
             device.ext_device_id,
@@ -294,6 +324,8 @@ def list_project_crashes(project_name):
 
 
 
+    # crash.module_names is populated at cron processing time, so no per-row
+    # coredump parsing happens here.
     return render_template('project.html', crashes = crashes, project_name = project_name, search = search or "", limit = limit, offset = offset, full_count = crashes[0]["full_count"] if len(crashes) > 0 else 0)
 
 @app.route('/crash')
@@ -850,7 +882,38 @@ def show_project_crash(project_name, crash_id):
     # Fetch all elf image data from database that matches this project and version
     elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, file_size, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
 
-    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"])
+    # Module map (best-effort; only used to populate the UI block).
+    modules_for_ui = []
+    try:
+        try:
+            decompressed_dmp = bz2.decompress(crash["crash_dmp"])
+        except IOError:
+            decompressed_dmp = crash["crash_dmp"]
+        dmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".dmp", delete=False) as df:
+                df.write(decompressed_dmp)
+                dmp_path = df.name
+            entries = mod_decoder.parse_module_map_from_coredump(dmp_path)
+        finally:
+            if dmp_path:
+                os.unlink(dmp_path)
+        for e in entries:
+            sha1 = e.get("sha1", "")
+            row = ldb().get_data(
+                "SELECT module_elf_id FROM module_elf WHERE app_sha1 = %s LIMIT 1",
+                (sha1,),
+            )
+            modules_for_ui.append({
+                "name": e["name"],
+                "sha1_short": sha1[:8],
+                "sha1_full": sha1,
+                "available": bool(row),
+            })
+    except Exception as ex:
+        app.logger.warning(f"Module map UI parse failed for crash {crash_id}: {ex}")
+
+    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"], modules = modules_for_ui)
 
 
 @app.route('/projects/<project_name>/<crash_id>/refresh')
@@ -876,6 +939,62 @@ def refresh_crash(project_name, crash_id):
     conn.commit()
 
     return redirect(url_for('show_project_crash', project_name=project_name, crash_id=crash_id))
+
+
+def _resolve_modules_for_dump(db, dump_bytes):
+    """
+    Parse the on-device module map from `dump_bytes`. For every entry, look up
+    the matching debug ELF in module_elf by app_sha1.
+
+    Returns:
+      (resolved_modules, status_lines)
+        resolved_modules: list[dict] enriched with 'elf' = filesystem path to
+                          a temp file containing the uncompressed debug ELF.
+        status_lines: list[str] human-readable annotations, including
+                      "module X (sha1 abcd...): symbols not available" for
+                      missing entries.
+    """
+    import io as _io
+    import tempfile as _tempfile
+
+    # Write dump to a NamedTemporaryFile so the existing parser can read it.
+    dmp_path = None
+    try:
+        with _tempfile.NamedTemporaryFile(suffix=".dmp", delete=False) as df:
+            df.write(dump_bytes)
+            dmp_path = df.name
+        entries = mod_decoder.parse_module_map_from_coredump(dmp_path)
+    except Exception as e:
+        return [], [f"# module map parse error: {e}"]
+    finally:
+        if dmp_path:
+            os.unlink(dmp_path)
+
+    resolved = []
+    status = []
+    for entry in entries:
+        sha1 = entry.get("sha1", "")
+        rows = db.get_data(
+            "SELECT elf_file FROM module_elf WHERE app_sha1 = %s LIMIT 1",
+            (sha1,),
+        )
+        if not rows:
+            status.append(
+                f"# module {entry['name']} (sha1 {sha1[:8]}...): symbols not available"
+            )
+            continue
+        try:
+            blob = bz2.decompress(rows[0]["elf_file"])
+        except IOError:
+            blob = rows[0]["elf_file"]
+        with _tempfile.NamedTemporaryFile(suffix=".elf", delete=False, prefix="mod_") as ef:
+            ef.write(blob)
+            entry["elf"] = ef.name
+        resolved.append(entry)
+        status.append(
+            f"# module {entry['name']} (sha1 {sha1[:8]}...): symbols loaded"
+        )
+    return resolved, status
 
 
 @app.route('/cron')
@@ -933,20 +1052,59 @@ def cron():
             elf.write(decompressed_elf_file)
             elf.close()
 
-            # Run esp-coredump to get crash dump info
-            p = subprocess.run(["esp-coredump", "--chip", "esp32s3", "info_corefile", "-t", "raw", "-c", dmp.name, elf.name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            d = p.stdout + p.stderr
-            dump += d.decode("utf-8")
+            # Resolve modules referenced by the dump (best-effort; missing
+            # modules are annotated but never block processing).
+            modules, mod_status = _resolve_modules_for_dump(ldb(), decompressed_crash_dmp)
+
+            for line in mod_status:
+                dump += line + "\n"
+
+            gdbinit_path = None
+            try:
+                # The stored dump is a raw coredump-partition image, so -t raw
+                # parses it directly. When modules are referenced, generate a
+                # gdbinit with their add-symbol-file lines and hand it to
+                # esp-coredump's native --extra-gdbinit-file. The chip is
+                # auto-detected from the self-describing raw image.
+                cmd = ["esp-coredump", "info_corefile", "-t", "raw", "-c", dmp.name]
+                if modules:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".gdbinit", delete=False, prefix="mod_"
+                    ) as gf:
+                        gdbinit_path = gf.name
+                    mod_decoder.generate_gdbinit(modules, gdbinit_path)
+                    cmd += ["--extra-gdbinit-file", gdbinit_path]
+                cmd.append(elf.name)
+                p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                dump += (p.stdout + p.stderr).decode("utf-8")
+            finally:
+                # Clean up temp module ELF files and the generated gdbinit.
+                for m in modules:
+                    try:
+                        os.remove(m["elf"])
+                    except OSError:
+                        pass
+                if gdbinit_path:
+                    try:
+                        os.remove(gdbinit_path)
+                    except OSError:
+                        pass
 
             # Delete temporary files
             os.unlink(dmp.name)
             os.unlink(elf.name)
 
-        # Update the dump field in the database with the crash dump info
-
-        c.execute("UPDATE crash SET dump = %s WHERE crash_id = %s", (dump, crash["crash_id"],))
+        # Update the dump field in the database with the crash dump info.
+        # Also persist the referenced module names now (at processing time) so the
+        # crash-list view can render its "Modules" tags without parsing every
+        # coredump on each page load.
+        module_names = _module_names_for_dump(crash["crash_dmp"])
+        c.execute(
+            "UPDATE crash SET dump = %s, module_names = %s WHERE crash_id = %s",
+            (dump, module_names, crash["crash_id"]),
+        )
         conn.commit()
-        app.logger.info("Updated crash {}".format(crash["crash_id"]))
+        app.logger.info("Updated crash {} (modules: {})".format(crash["crash_id"], module_names))
 
         # Send webhooks
         project_name = crash["project_name"]
@@ -1202,33 +1360,82 @@ def download_crash(crash_id):
         zip_file.write(dmp.name,  arcname="crash_{}/crash_{}.dmp".format(crash_id, crash_id))
         os.unlink(dmp.name)
 
-        for elf_image in elf_images:
-            # Create temporary files to store crash and elf data
-            elf = tempfile.NamedTemporaryFile(delete=False)
+        # Resolve any dynamically-loaded modules referenced by the dump so the
+        # package can ship their debug ELFs and a ready-to-use gdbinit. Each
+        # resolved entry's debug ELF is written to a temp file (m["elf"]); clean
+        # those up in the finally below.
+        resolved, mod_status = _resolve_modules_for_dump(ldb(), decompressed_crash_dmp)
+        try:
+            if resolved:
+                # Ship each module's debug ELF and remember the relative path the
+                # gdbinit should reference (valid once the script cd's into the
+                # package dir).
+                for m in resolved:
+                    safe = re.sub(r'[^A-Za-z0-9._-]', '_', m["name"])
+                    zip_file.write(m["elf"], arcname="crash_{}/modules/{}.elf".format(crash_id, safe))
+                    m["elf_display"] = "modules/{}.elf".format(safe)
+                # Pre-generate the gdbinit: reads each m["elf"] for the load base,
+                # emits the relative m["elf_display"] paths.
+                gi = tempfile.NamedTemporaryFile(mode="w", suffix=".gdbinit", delete=False)
+                gi.close()
+                mod_decoder.generate_gdbinit(resolved, gi.name)
+                zip_file.write(gi.name, arcname="crash_{}/module_symbols.gdbinit".format(crash_id))
+                os.unlink(gi.name)
+                # Note any referenced modules whose symbols were not uploaded.
+                missing = [s for s in mod_status if "symbols not available" in s]
+                if missing:
+                    zip_file.writestr(
+                        "crash_{}/MODULES_README.txt".format(crash_id),
+                        "Modules referenced by this crash with no uploaded symbols "
+                        "(their frames will not be symbolicated):\n\n" + "\n".join(missing) + "\n",
+                    )
 
-            try:
-                decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
-            except IOError:
-                decompressed_elf_file = elf_image["elf_file"]
+            for elf_image in elf_images:
+                # Create temporary files to store crash and elf data
+                elf = tempfile.NamedTemporaryFile(delete=False)
 
-            # Write decompressed data to temporary files
-            elf.write(decompressed_elf_file)
-            elf.close()
+                try:
+                    decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
+                except IOError:
+                    decompressed_elf_file = elf_image["elf_file"]
 
-            # Add files to zip
-            zip_file.write(elf.name, arcname="crash_{}/elf_{}.elf".format(crash_id, elf_image["elf_file_id"]))
+                # Write decompressed data to temporary files
+                elf.write(decompressed_elf_file)
+                elf.close()
 
-            os.unlink(elf.name)
+                # Add files to zip
+                zip_file.write(elf.name, arcname="crash_{}/elf_{}.elf".format(crash_id, elf_image["elf_file_id"]))
 
-            script = tempfile.NamedTemporaryFile(delete=False)
-            script.write("#!/bin/bash\n".encode())
-            script.write(". $ESP_IDF/export.sh\n".encode())
-            script.write("exec esp-coredump dbg_corefile -t raw --core {} {}\n".format("crash_{}.dmp".format(crash_id), "elf_{}.elf".format(elf_image["elf_file_id"])).encode())
-            script.close()
-            zip_file.write(script.name, arcname="crash_{}/elf_{}.sh".format(crash_id, elf_image["elf_file_id"]))
+                os.unlink(elf.name)
 
+                core_arc = "crash_{}.dmp".format(crash_id)
+                elf_arc = "elf_{}.elf".format(elf_image["elf_file_id"])
+                lines = ["#!/bin/bash"]
+                if resolved:
+                    lines.append("# Launches esp-coredump with module symbols pre-loaded.")
+                # cd into the package dir so the relative .dmp/.elf/gdbinit paths resolve.
+                lines.append('cd "$(dirname "$0")"')
+                lines.append(". $ESP_IDF/export.sh")
+                if resolved:
+                    lines.append(
+                        "exec esp-coredump dbg_corefile -t raw --core {} \\\n"
+                        "    --extra-gdbinit-file module_symbols.gdbinit {}".format(core_arc, elf_arc)
+                    )
+                else:
+                    lines.append("exec esp-coredump dbg_corefile -t raw --core {} {}".format(core_arc, elf_arc))
 
-
+                script = tempfile.NamedTemporaryFile(delete=False)
+                script.write(("\n".join(lines) + "\n").encode())
+                script.close()
+                zip_file.write(script.name, arcname="crash_{}/elf_{}.sh".format(crash_id, elf_image["elf_file_id"]))
+                os.unlink(script.name)
+        finally:
+            # Clean up the temp module debug ELFs written by _resolve_modules_for_dump.
+            for m in resolved:
+                try:
+                    os.remove(m["elf"])
+                except OSError:
+                    pass
 
     # Send zip file
     status = send_file(zipf.name, mimetype='application/zip', as_attachment=True, download_name="crash_{}.zip".format(crash_id))
@@ -1470,6 +1677,48 @@ def upload_elf():
 
     # Return a success message
     return "OK", 200
+
+@app.route('/upload_module_elf', methods=['POST'])
+def upload_module_elf():
+    """Upload a module debug ELF, identified by SHA1 of the wire .app bytes."""
+    if 'file' not in request.files:
+        return "No file part", 400
+    file = request.files['file']
+    if file.filename == '':
+        return "No selected file", 400
+
+    name = request.args.get('name') or request.form.get('name')
+    app_sha1 = request.args.get('app_sha1') or request.form.get('app_sha1')
+
+    if not name:
+        return "Missing name", 400
+    if not app_sha1 or len(app_sha1) != 40 or not all(c in '0123456789abcdefABCDEF' for c in app_sha1):
+        return "Missing or malformed app_sha1 (expect 40 hex chars)", 400
+    app_sha1 = app_sha1.lower()
+
+    raw = file.read()
+    # Store compressed; record the uncompressed size. Accept either a raw ELF
+    # or an already-bz2-compressed upload (decompress only once to detect).
+    try:
+        uncompressed_size = len(bz2.decompress(raw))
+        compressed = raw
+    except IOError:
+        compressed = bz2.compress(raw)
+        uncompressed_size = len(raw)
+
+    db = ldb()
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO module_elf (date, name, app_sha1, elf_file, file_size)
+        VALUES (NOW(), %s, %s, %s, %s)
+        ON CONFLICT (app_sha1) DO NOTHING
+        """,
+        (name, app_sha1, psycopg2.Binary(compressed), uncompressed_size),
+    )
+    db.commit()
+    app.logger.info(f"Stored module_elf name={name} app_sha1={app_sha1} size={uncompressed_size}")
+    return "OK\n", 200
 
 @app.route('/projects/<project_name>/slack/test')
 @login_required

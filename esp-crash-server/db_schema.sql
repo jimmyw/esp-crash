@@ -1,5 +1,9 @@
 CREATE TABLE IF NOT EXISTS device (device_id SERIAL PRIMARY KEY, ext_device_id TEXT UNIQUE, alias TEXT);
 CREATE TABLE IF NOT EXISTS crash (crash_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, crash_dmp BYTEA, device_id INTEGER REFERENCES device(device_id) NOT NULL, textsearch TSVECTOR, dump TEXT);
+-- Names of dynamically-loaded modules referenced by the crash, computed once at
+-- cron processing time so the crash list can render "Modules" tags without
+-- parsing every coredump per page load.
+ALTER TABLE crash ADD COLUMN IF NOT EXISTS module_names TEXT[];
 CREATE TABLE IF NOT EXISTS elf_file (elf_file_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, elf_file BYTEA, file_size INTEGER, project_alias TEXT);
 CREATE TABLE IF NOT EXISTS project_auth (project_auth_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, github TEXT);
 CREATE INDEX IF NOT EXISTS textsearch_idx ON crash USING GIN (textsearch);
@@ -64,3 +68,14 @@ CREATE INDEX idx_elf_file_project_name ON elf_file (project_name);
 CREATE INDEX idx_crash_project_name_ver ON crash (project_name, project_ver);
 CREATE INDEX idx_project_auth_lookup ON project_auth (project_name, github);
 CREATE INDEX idx_elf_file_project_date ON elf_file (project_name, date DESC);
+
+CREATE TABLE IF NOT EXISTS module_elf (
+    module_elf_id  SERIAL PRIMARY KEY,
+    "date"         TIMESTAMP DEFAULT NOW(),
+    name           TEXT NOT NULL,
+    app_sha1       CHAR(40) NOT NULL UNIQUE,
+    elf_file       BYTEA NOT NULL,
+    file_size      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS module_elf_app_sha1_idx ON module_elf(app_sha1);
