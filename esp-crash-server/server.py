@@ -516,12 +516,20 @@ def project_settings(project_name):
         ORDER BY created_date DESC
     """, (project_name,))
 
+    settings_row = db.get_data(
+        "SELECT device_url_template FROM project_settings WHERE project_name = %s",
+        (project_name,))
+    device_url_template = settings_row[0]['device_url_template'] if settings_row else ''
+
     return render_template('project_settings.html',
                          project_name=project_name,
                          acls=acls,
                          webhooks=webhooks_list,
                          slack_integrations=slack_integrations,
-                         slack_client_id=app.config['SLACK_CLIENT_ID'])
+                         slack_client_id=app.config['SLACK_CLIENT_ID'],
+                         device_url_template=device_url_template or '',
+                         device_url_placeholder=DEVICE_ID_PLACEHOLDER,
+                         device_url_error=request.args.get('device_url_error'))
 
 @app.route('/projects/<project_name>/webhooks', methods=['GET', 'POST'])
 @login_required
@@ -576,6 +584,37 @@ def project_webhooks_admin(project_name):
         return redirect(url_for('project_settings', project_name=project_name))
 
     # GET request logic
+    return redirect(url_for('project_settings', project_name=project_name))
+
+@app.route('/projects/<project_name>/settings/device-url', methods=['POST'])
+@login_required
+def project_device_url_admin(project_name):
+    """Save (or clear) the per-project device-id URL template."""
+    db = ldb()
+    cur = db.cursor()
+
+    # Permission check: same gate as the rest of the project settings.
+    auth_where, auth_args = auth_clause("github")
+    auth_check = db.get_data("""
+        SELECT project_name FROM project_auth
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
+    if not auth_check:
+        return "Forbidden: You do not have access to this project.", 403
+
+    template = (request.form.get('device_url_template') or '').strip()
+
+    # A non-blank template must contain the {device_id} placeholder; blank clears it.
+    if not device_url_template_is_valid(template):
+        return redirect(url_for('project_settings', project_name=project_name, device_url_error='1'))
+
+    cur.execute("""
+        INSERT INTO project_settings (project_name, device_url_template)
+        VALUES (%s, %s)
+        ON CONFLICT (project_name) DO UPDATE SET device_url_template = EXCLUDED.device_url_template
+    """, (project_name, template or None))
+    db.commit()
+
     return redirect(url_for('project_settings', project_name=project_name))
 
 @app.route('/projects/<project_name>/slack/auth')
