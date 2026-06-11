@@ -41,3 +41,30 @@ def test_validation_blank_is_valid():
 def test_validation_requires_placeholder_when_non_blank():
     assert device_url_template_is_valid("https://x.test/s/{device_id}") is True
     assert device_url_template_is_valid("https://x.test/no-token") is False
+
+
+# --- scheme-safety tests (Change 2) ---
+
+
+def test_validation_rejects_javascript_scheme():
+    assert device_url_template_is_valid("javascript:alert(1)/{device_id}") is False
+
+
+def test_validation_rejects_ftp_scheme():
+    assert device_url_template_is_valid("ftp://x.test/{device_id}") is False
+
+
+def test_validation_accepts_http_scheme():
+    assert device_url_template_is_valid("http://x.test/{device_id}") is True
+
+
+def test_validation_accepts_https_scheme_case_insensitive():
+    assert device_url_template_is_valid("HTTPS://X.TEST/{device_id}") is True
+
+
+def test_resolve_returns_none_for_javascript_scheme():
+    assert resolve_device_url("javascript:alert(1)/{device_id}", "ABC") is None
+
+
+def test_resolve_returns_none_for_ftp_scheme():
+    assert resolve_device_url("ftp://x.test/{device_id}", "ABC") is None
