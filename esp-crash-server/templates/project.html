@@ -66,15 +66,21 @@ endblock %}
                         {{ crash.project_ver }}
                     </a>
                 </td>
-                {% if crash.alias %}
+                {% set device_ext_url = crash.device_url_template | resolve_device_url(crash.ext_device_id) %}
                 <td class="px-6 py-4">
+                    {% if crash.alias %}
                     <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a>
-                </td>
-                {% else %}
-                <td class="px-6 py-4">
+                    {% else %}
                     <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, search=crash.ext_device_id) }}">{{ crash.ext_device_id }}</a>
+                    {% endif %}
+                    {% if device_ext_url %}
+                    <a href="{{ device_ext_url }}" target="_blank" rel="noopener" title="Open external device link" class="inline-block align-middle ml-1 text-blue-600 hover:text-blue-800">
+                        <svg class="inline w-4 h-4 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                        </svg>
+                    </a>
+                    {% endif %}
                 </td>
-                {% endif %}
                 <td class="px-6 py-4">
                     {% if crash.module_names %}
                     <div class="flex flex-wrap gap-1">

@@ -302,6 +302,7 @@ def list_project_crashes(project_name):
             array_agg(elf_file.project_alias) as project_alias,
             device.ext_device_id,
             device.alias,
+            project_settings.device_url_template,
             count(*) OVER() AS full_count
         FROM
             crash
@@ -311,6 +312,8 @@ def list_project_crashes(project_name):
             elf_file USING (project_name, project_ver)
         LEFT JOIN
             device USING (device_id)
+        LEFT JOIN
+            project_settings USING (project_name)
         WHERE
         """ + where_part + """
         GROUP BY
@@ -320,7 +323,8 @@ def list_project_crashes(project_name):
             crash.device_id,
             crash.project_ver,
             device.ext_device_id,
-            device.alias
+            device.alias,
+            project_settings.device_url_template
         ORDER BY
             crash.date DESC, crash.crash_id
         LIMIT
