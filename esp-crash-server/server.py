@@ -2,6 +2,12 @@ import os
 import re
 import json
 
+from device_url import (
+    DEVICE_ID_PLACEHOLDER,
+    device_url_template_is_valid,
+    resolve_device_url,
+)
+
 from functools import wraps
 from flask import Flask, app, request, redirect, url_for, session, send_file, jsonify
 from flask_dance.contrib.github import make_github_blueprint, github
@@ -147,6 +153,7 @@ def render_template(template_name, **context):
 
 github_bp = make_github_blueprint()
 app.register_blueprint(github_bp, url_prefix="/login")
+app.jinja_env.filters['resolve_device_url'] = resolve_device_url
 def login_required(f):
     """Decorator to require GitHub authentication."""
     @wraps(f)
