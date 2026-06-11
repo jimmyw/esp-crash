@@ -912,13 +912,15 @@ def show_project_crash(project_name, crash_id):
     auth_where, auth_args = auth_clause("project_auth.github")
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump, project_settings.device_url_template
         FROM
             crash
         JOIN
             project_auth USING (project_name)
         JOIN
             device USING (device_id)
+        LEFT JOIN
+            project_settings USING (project_name)
         WHERE
             crash_id = %s AND """ + auth_where + """
         ORDER BY
