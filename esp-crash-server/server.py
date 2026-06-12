@@ -2,6 +2,12 @@ import os
 import re
 import json
 
+from device_url import (
+    DEVICE_ID_PLACEHOLDER,
+    device_url_template_is_valid,
+    resolve_device_url,
+)
+
 from functools import wraps
 from flask import Flask, app, request, redirect, url_for, session, send_file, jsonify
 from flask_dance.contrib.github import make_github_blueprint, github
@@ -147,6 +153,7 @@ def render_template(template_name, **context):
 
 github_bp = make_github_blueprint()
 app.register_blueprint(github_bp, url_prefix="/login")
+app.jinja_env.filters['resolve_device_url'] = resolve_device_url
 def login_required(f):
     """Decorator to require GitHub authentication."""
     @wraps(f)
@@ -295,6 +302,7 @@ def list_project_crashes(project_name):
             array_agg(elf_file.project_alias) as project_alias,
             device.ext_device_id,
             device.alias,
+            project_settings.device_url_template,
             count(*) OVER() AS full_count
         FROM
             crash
@@ -304,6 +312,8 @@ def list_project_crashes(project_name):
             elf_file USING (project_name, project_ver)
         LEFT JOIN
             device USING (device_id)
+        LEFT JOIN
+            project_settings USING (project_name)
         WHERE
         """ + where_part + """
         GROUP BY
@@ -313,7 +323,8 @@ def list_project_crashes(project_name):
             crash.device_id,
             crash.project_ver,
             device.ext_device_id,
-            device.alias
+            device.alias,
+            project_settings.device_url_template
         ORDER BY
             crash.date DESC, crash.crash_id
         LIMIT
@@ -509,12 +520,20 @@ def project_settings(project_name):
         ORDER BY created_date DESC
     """, (project_name,))
 
+    settings_row = db.get_data(
+        "SELECT device_url_template FROM project_settings WHERE project_name = %s",
+        (project_name,))
+    device_url_template = settings_row[0]['device_url_template'] if settings_row else ''
+
     return render_template('project_settings.html',
                          project_name=project_name,
                          acls=acls,
                          webhooks=webhooks_list,
                          slack_integrations=slack_integrations,
-                         slack_client_id=app.config['SLACK_CLIENT_ID'])
+                         slack_client_id=app.config['SLACK_CLIENT_ID'],
+                         device_url_template=device_url_template or '',
+                         device_url_placeholder=DEVICE_ID_PLACEHOLDER,
+                         device_url_error=request.args.get('device_url_error'))
 
 @app.route('/projects/<project_name>/webhooks', methods=['GET', 'POST'])
 @login_required
@@ -569,6 +588,37 @@ def project_webhooks_admin(project_name):
         return redirect(url_for('project_settings', project_name=project_name))
 
     # GET request logic
+    return redirect(url_for('project_settings', project_name=project_name))
+
+@app.route('/projects/<project_name>/settings/device-url', methods=['POST'])
+@login_required
+def project_device_url_admin(project_name):
+    """Save (or clear) the per-project device-id URL template."""
+    db = ldb()
+    cur = db.cursor()
+
+    # Permission check: same gate as the rest of the project settings.
+    auth_where, auth_args = auth_clause("github")
+    auth_check = db.get_data("""
+        SELECT project_name FROM project_auth
+        WHERE project_name = %s AND """ + auth_where + """
+    """, (project_name,) + auth_args)
+    if not auth_check:
+        return "Forbidden: You do not have access to this project.", 403
+
+    template = (request.form.get('device_url_template') or '').strip()
+
+    # A non-blank template must contain the {device_id} placeholder; blank clears it.
+    if not device_url_template_is_valid(template):
+        return redirect(url_for('project_settings', project_name=project_name, device_url_error='1'))
+
+    cur.execute("""
+        INSERT INTO project_settings (project_name, device_url_template)
+        VALUES (%s, %s)
+        ON CONFLICT (project_name) DO UPDATE SET device_url_template = EXCLUDED.device_url_template
+    """, (project_name, template or None))
+    db.commit()
+
     return redirect(url_for('project_settings', project_name=project_name))
 
 @app.route('/projects/<project_name>/slack/auth')
@@ -862,13 +912,15 @@ def show_project_crash(project_name, crash_id):
     auth_where, auth_args = auth_clause("project_auth.github")
     crash = ldb().get_data("""
         SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump
+            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump, project_settings.device_url_template
         FROM
             crash
         JOIN
             project_auth USING (project_name)
         JOIN
             device USING (device_id)
+        LEFT JOIN
+            project_settings USING (project_name)
         WHERE
             crash_id = %s AND """ + auth_where + """
         ORDER BY

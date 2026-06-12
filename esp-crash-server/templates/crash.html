@@ -49,11 +49,21 @@
     <span class="w-1/6 text-center">crash size<br /><b>{{ crash.crash_dmp|length }} bytes</b></span>
     <span class="w-1/6 text-center">date<br /><b>{{crash.date.strftime('%Y-%m-%d')}}<br />{{crash.date.strftime('%H:%M:%S')}}</b></span>
     <span class="w-1/6 text-center">project_name<br /><b>{{ crash.project_name }}</b></span>
-    {% if crash.alias %}
-    <span class="w-1/6 text-center">device_id<br /><b><a href="{{ url_for('show_device', device_id=crash.device_id) }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a></b></span>
-    {% else %}
-    <span class="w-1/6 text-center">device_id<br /><b><a href="{{ url_for('show_device', device_id=crash.device_id) }}">{{ crash.ext_device_id }}<br />{{ crash.device_alias}} </a></b></span>
-    {% endif %}
+    {% set device_ext_url = crash.device_url_template | resolve_device_url(crash.ext_device_id) %}
+    <span class="w-1/6 text-center">device_id<br />
+        {% if crash.alias %}
+        <b><a href="{{ url_for('show_device', device_id=crash.device_id) }}">{{ crash.alias }} ({{ crash.ext_device_id }})</a></b>
+        {% else %}
+        <b><a href="{{ url_for('show_device', device_id=crash.device_id) }}">{{ crash.ext_device_id }}<br />{{ crash.device_alias}} </a></b>
+        {% endif %}
+        {% if device_ext_url %}
+        <a href="{{ device_ext_url }}" target="_blank" rel="noopener noreferrer" title="Open external device link" aria-label="Open external device page (opens in new tab)" class="inline-block align-middle ml-1 text-blue-600 hover:text-blue-800">
+            <svg aria-hidden="true" class="inline w-4 h-4 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            </svg>
+        </a>
+        {% endif %}
+    </span>
     {% for elf_image in elf_images %}
     <span class="w-1/6 text-center">project_ver<br /><b><a href="{{ url_for('show_build', build_id=elf_image.elf_file_id) }}">{{ crash.project_ver}}<br />{{ elf_image.project_alias }}</a></b></span>
     <span class="w-1/6 text-center">elf_image date<br /><b><a href="{{ url_for('show_build', build_id=elf_image.elf_file_id) }}">{{elf_image.date.strftime('%Y-%m-%d')}}<br />{{elf_image.date.strftime('%H:%M:%S')}}</a></b></span>

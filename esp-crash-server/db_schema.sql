@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS project_slack_integrations (
     github_user TEXT
 );
 
+CREATE TABLE IF NOT EXISTS project_settings (
+    project_name TEXT PRIMARY KEY,
+    device_url_template TEXT
+);
+
 CREATE INDEX idx_elf_file_project ON elf_file (project_name, project_ver);
 CREATE INDEX idx_elf_file_project_name ON elf_file (project_name);
 CREATE INDEX idx_crash_project_name_ver ON crash (project_name, project_ver);

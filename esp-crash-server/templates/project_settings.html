@@ -5,9 +5,12 @@
     <h1 class="text-3xl leading-none text-slate-900">
         Settings for <b>{{ project_name }}</b>
     </h1>
-    <a href="{{ url_for('list_project_crashes', project_name=project_name) }}" class="flex items-center p-2 text-blue-600 hover:underline">
-        <svg class="w-5 h-5 mr-1 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    <a href="{{ url_for('list_project_crashes', project_name=project_name) }}"
+        class="flex items-center p-2 text-blue-600 hover:underline">
+        <svg class="w-5 h-5 mr-1 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
         <span>Back to Project Crashes</span>
     </a>
@@ -30,7 +33,9 @@
                 <td class="px-6 py-4">{{ acl.project_name }}</td>
                 <td class="px-6 py-4">{{ acl.github }}</td>
                 <td class="px-6 py-4">{{ acl.date }}</td>
-                <td class="px-6 py-4"><a href="{{ url_for('delete_acl', project_name=project_name, github=acl.github) }}" class="font-medium text-blue-600 hover:underline">Delete</a></td>
+                <td class="px-6 py-4"><a
+                        href="{{ url_for('delete_acl', project_name=project_name, github=acl.github) }}"
+                        class="font-medium text-blue-600 hover:underline">Delete</a></td>
             </tr>
             {% endfor %}
         </tbody>
@@ -60,7 +65,8 @@
             <tr class="bg-white border-b hover:bg-gray-50">
                 <td class="px-6 py-4">{{ webhook[1] }}</td>
                 <td class="px-6 py-4 text-right">
-                    <form action="{{ url_for('project_webhooks_admin', project_name=project_name) }}" method="post" class="inline">
+                    <form action="{{ url_for('project_webhooks_admin', project_name=project_name) }}" method="post"
+                        class="inline">
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="webhook_id" value="{{ webhook[0] }}">
                         <button type="submit" class="font-medium text-red-600 hover:underline">Delete</button>
@@ -80,10 +86,13 @@
         <input type="hidden" name="action" value="add">
         <div>
             <label for="webhook_url" class="block text-sm font-medium text-gray-700 mb-1">Webhook URL:</label>
-            <input type="url" id="webhook_url" name="webhook_url" required class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+            <input type="url" id="webhook_url" name="webhook_url" required
+                class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
         </div>
         <div>
-            <button type="submit" class="w-full px-4 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">Add Webhook</button>
+            <button type="submit"
+                class="w-full px-4 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">Add
+                Webhook</button>
         </div>
     </form>
 </div>
@@ -112,15 +121,13 @@
                 <td class="px-6 py-4">#{{ integration.slack_channel_name }}</td>
                 <td class="px-6 py-4">{{ integration.created_date|format_datetime }}</td>
                 <td class="px-6 py-4 text-right">
-                    <a href="{{ url_for('verify_slack_integration', project_name=project_name) }}" 
-                       class="font-medium text-purple-600 hover:underline mr-4"
-                       target="_blank">Verify</a>
-                    <a href="{{ url_for('test_slack_integration', project_name=project_name) }}" 
-                       class="font-medium text-green-600 hover:underline mr-4"
-                       target="_blank">Test</a>
-                    <a href="{{ url_for('delete_slack_integration', project_name=project_name, integration_id=integration.slack_integration_id) }}" 
-                       class="font-medium text-red-600 hover:underline"
-                       onclick="return confirm('Are you sure you want to remove this Slack integration?')">Remove</a>
+                    <a href="{{ url_for('verify_slack_integration', project_name=project_name) }}"
+                        class="font-medium text-purple-600 hover:underline mr-4" target="_blank">Verify</a>
+                    <a href="{{ url_for('test_slack_integration', project_name=project_name) }}"
+                        class="font-medium text-green-600 hover:underline mr-4" target="_blank">Test</a>
+                    <a href="{{ url_for('delete_slack_integration', project_name=project_name, integration_id=integration.slack_integration_id) }}"
+                        class="font-medium text-red-600 hover:underline"
+                        onclick="return confirm('Are you sure you want to remove this Slack integration?')">Remove</a>
                 </td>
             </tr>
             {% endfor %}
@@ -137,10 +144,11 @@
         Connect this project to Slack to receive crash notifications directly in your workspace.
     </p>
     <div class="space-y-4">
-        <a href="{{ url_for('slack_auth', project_name=project_name) }}" 
-           class="w-full inline-flex justify-center items-center px-4 py-2 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+        <a href="{{ url_for('slack_auth', project_name=project_name) }}"
+            class="w-full inline-flex justify-center items-center px-4 py-2 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
             <svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M5.42 9.47c-1.01-.28-2.07.31-2.35 1.32-.28 1.01.31 2.07 1.32 2.35l2.69.74.74-2.69-2.4-.72zm8.1 2.23l1.76-6.39c.28-1.01-.31-2.07-1.32-2.35-1.01-.28-2.07.31-2.35 1.32l-1.76 6.39 2.67.03zm5.13 1.58c1.01.28 2.07-.31 2.35-1.32.28-1.01-.31-2.07-1.32-2.35l-2.69-.74-.74 2.69 2.4.72zm-8.1-2.23l-1.76 6.39c-.28 1.01.31 2.07 1.32 2.35 1.01.28 2.07-.31 2.35-1.32l1.76-6.39-2.67-.03z"/>
+                <path
+                    d="M5.42 9.47c-1.01-.28-2.07.31-2.35 1.32-.28 1.01.31 2.07 1.32 2.35l2.69.74.74-2.69-2.4-.72zm8.1 2.23l1.76-6.39c.28-1.01-.31-2.07-1.32-2.35-1.01-.28-2.07.31-2.35 1.32l-1.76 6.39 2.67.03zm5.13 1.58c1.01.28 2.07-.31 2.35-1.32.28-1.01-.31-2.07-1.32-2.35l-2.69-.74-.74 2.69 2.4.72zm-8.1-2.23l-1.76 6.39c-.28 1.01.31 2.07 1.32 2.35 1.01.28 2.07-.31 2.35-1.32l1.76-6.39-2.67-.03z" />
             </svg>
             Add to Slack
         </a>
@@ -150,30 +158,62 @@
     </div>
 </div>
 
+<div class="w-5/6 mt-12 p-6 bg-white border border-gray-200 rounded-lg shadow mb-4">
+    <h2 class="text-2xl font-semibold mb-4">Device link template</h2>
+    <p class="text-sm text-gray-600 mb-4">
+        Optional. When set, a small "open external link" icon appears next to each
+        device id in the crash list and crash detail views. Use the
+        <code>{{ device_url_placeholder }}</code> token where the device id (the
+        burn-in QR code, or MAC for un-burned units) should go. The id is
+        URL-encoded automatically.<br>
+        Example: <code>https://www.example.com/search/{{ device_url_placeholder }}</code><br>
+        Leave the field empty and save to remove the link.
+    </p>
+    {% if device_url_error %}
+    <p class="text-sm text-red-600 mb-2">
+        Template must start with <code>https://</code> or <code>http://</code> and contain the
+        <code>{{ device_url_placeholder }}</code> token (or be empty to clear it).
+    </p>
+    {% endif %}
+    <form action="{{ url_for('project_device_url_admin', project_name=project_name) }}" method="POST"
+        class="flex items-center">
+        <label for="device_url_template" class="sr-only">Device link template URL</label>
+        <input type="text" id="device_url_template" name="device_url_template" value="{{ device_url_template }}"
+            placeholder="https://www.example.com/search/{{ device_url_placeholder }}"
+            class="p-2 border-2 border-gray-300 rounded-md flex-grow mr-2">
+        <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">Save</button>
+    </form>
+</div>
+
 <div class="w-5/6 mt-12 p-6 bg-white border border-gray-200 rounded-lg shadow">
     <h2 class="text-2xl font-semibold mb-4 border-b pb-2">Integration Information</h2>
-    
+
     <div class="mb-6">
         <h3 class="text-xl font-semibold mb-2">Webhook Integration</h3>
         <p class="text-gray-700 mb-2">
-            Generic webhooks send crash data as JSON to any URL you specify. Perfect for custom integrations or services like Discord, Microsoft Teams, or your own applications.
+            Generic webhooks send crash data as JSON to any URL you specify. Perfect for custom integrations or services
+            like Discord, Microsoft Teams, or your own applications.
         </p>
         <p class="text-sm text-gray-600">
             <strong>Payload includes:</strong> project name, version, crash ID, dump snippet, and details URL
         </p>
     </div>
-    
+
     <div>
         <h3 class="text-xl font-semibold mb-2">Slack Integration</h3>
         <p class="text-gray-700 mb-2">
-            Native Slack integration provides rich formatting with crash details displayed as interactive blocks, including action buttons to view crash details directly.
+            Native Slack integration provides rich formatting with crash details displayed as interactive blocks,
+            including action buttons to view crash details directly.
         </p>
         <p class="text-sm text-gray-600 mb-2">
-            <strong>Features:</strong> Rich message formatting, action buttons, automatic channel detection, team-specific tokens
+            <strong>Features:</strong> Rich message formatting, action buttons, automatic channel detection,
+            team-specific tokens
         </p>
         <div class="bg-yellow-50 border border-yellow-200 rounded-md p-3 mt-3">
             <p class="text-yellow-800 text-sm">
-                <strong>💡 Important:</strong> To see test messages and crash notifications, make sure you're a member of the Slack workspace and have access to the configured channel. If you don't see messages after a successful test, check that you're logged into the correct Slack workspace.
+                <strong>💡 Important:</strong> To see test messages and crash notifications, make sure you're a member
+                of the Slack workspace and have access to the configured channel. If you don't see messages after a
+                successful test, check that you're logged into the correct Slack workspace.
             </p>
         </div>
     </div>
