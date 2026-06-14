@@ -165,8 +165,8 @@ as raw addresses.
 
 The device records a small **module registry** in a `COREDUMP_DRAM_ATTR`
 variable, so it is captured inside every coredump. Each record holds the
-module's name, the SHA1 of the over-the-wire `.app` bytes, and its section
-runtime addresses. There are two ways to use it:
+module's name, its version string, the SHA1 of the over-the-wire `.app` bytes,
+and its section runtime addresses. There are two ways to use it:
 
 - **Server-side (automatic):** pre-upload each module's debug ELF, keyed by the
   SHA1 of its `.app` bytes. When a dump arrives, the backend reads the registry,
@@ -233,7 +233,7 @@ Each record must contain these fields (names matter — the gdb scripts referenc
 them by name):
 
 ```
-record  { char name[]; uint8_t sha1[20];
+record  { char name[]; char version[]; uint8_t sha1[20];
           section text; section data; section bss; section rodata; }
 section { uint32_t addr; uint32_t v_addr; uint32_t size; }
 ```
@@ -258,7 +258,8 @@ typedef struct {
 } mod_map_section_t;
 
 typedef struct {
-    char    name[64];
+    char    name[32];     // NUL-terminated module name
+    char    version[24];  // NUL-terminated version string (informational)
     uint8_t sha1[20];
     mod_map_section_t text, data, bss, rodata;
 } mod_record_t;
@@ -272,6 +273,13 @@ The `sha1` field is the SHA1 of the over-the-wire `.app` bytes and is the join k
 for **server-side** symbolication: the backend matches it against the `app_sha1`
 used when uploading the module ELF. The **local** CLI matches by name instead
 (it has the debug `.elf`, not the wire `.app`), so there `sha1` is informational.
+
+The `version` field is a free-form module version string (e.g.
+`"1560-a6f50c32-dirty"`). It is informational — not used for matching — and is
+surfaced on the crash page's module card alongside the name and SHA1. Field
+sizes are up to your firmware; the decoder reads each field symbolically by name
+from DWARF, so only the field **names** (`name`, `version`, `sha1`, the section
+members) must match.
 
 ## Example Output
 

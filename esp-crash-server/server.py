@@ -918,6 +918,7 @@ def show_project_crash(project_name, crash_id):
         )
         modules_for_ui.append({
             "name": e.get("name", ""),
+            "version": e.get("version", ""),
             "sha1_short": sha1[:8],
             "sha1_full": sha1,
             "available": bool(row),
@@ -1056,7 +1057,7 @@ def cron():
             # Read the registry (plain gdb) and resolve module ELFs by sha1.
             regs, loaded, base_text, core_elf, mod_status = \
                 _resolve_modules_for_dump(ldb(), dmp.name, elf.name)
-            last_module_map = [{"name": r["name"], "sha1": r["sha1"]} for r in regs]
+            last_module_map = [{"name": r["name"], "version": r.get("version", ""), "sha1": r["sha1"]} for r in regs]
             try:
                 for line in mod_status:
                     dump += line + "\n"
