@@ -4,13 +4,14 @@ import decode_module_coredump as d
 def test_parse_registry_output_reads_occupied_slot():
     out = (
         "some gdb banner\n"
-        "MODSLOT|0|ems_goodwe|907577e48f4fe8b69a2e92468dbade2d72a5ea28|"
+        "MODSLOT|0|ems_goodwe|1560-a6f50c32|907577e48f4fe8b69a2e92468dbade2d72a5ea28|"
         "1076484860|1073651168|1073651216|1062290960\n"
-        "MODSLOT|1||0|0|0|0\n"  # free slot
+        "MODSLOT|1||||0|0|0|0\n"  # free slot: empty name
     )
     mods = d.parse_registry_output(out)
     assert mods == [{
         "name": "ems_goodwe",
+        "version": "1560-a6f50c32",
         "sha1": "907577e48f4fe8b69a2e92468dbade2d72a5ea28",
         "text": 1076484860, "data": 1073651168,
         "bss": 1073651216, "rodata": 1062290960,
@@ -19,8 +20,8 @@ def test_parse_registry_output_reads_occupied_slot():
 
 def test_parse_registry_output_skips_free_and_midload_slots():
     out = (
-        "MODSLOT|0||0|0|0|0\n"               # free: empty name
-        "MODSLOT|1|loading|ab|0|10|20|30\n"  # mid-load: text.addr == 0
+        "MODSLOT|0||||0|0|0|0\n"                   # free: empty name
+        "MODSLOT|1|loading|1.0|ab|0|10|20|30\n"   # mid-load: text.addr == 0
     )
     assert d.parse_registry_output(out) == []
 
@@ -30,7 +31,7 @@ def test_parse_registry_output_no_slots_returns_empty():
 
 
 def test_parse_registry_output_ignores_malformed_lines():
-    out = "MODSLOT|0|x\nMODSLOT|0|x|aa|notanint|0|0|0\n"
+    out = "MODSLOT|0|x\nMODSLOT|0|x|v|aa|notanint|0|0|0\n"
     assert d.parse_registry_output(out) == []
 
 
@@ -52,7 +53,7 @@ def test_parse_elf_map_arg_requires_equals():
 
 def test_addsym_commands_emits_literal_hex_sections():
     loaded = [{
-        "name": "ems_goodwe", "sha1": "aa", "elf": "/t/mod.elf",
+        "name": "ems_goodwe", "version": "1.0", "sha1": "aa", "elf": "/t/mod.elf",
         "text": 0x4029dafc, "data": 0x3ffb3260,
         "bss": 0x3ffb3290, "rodata": 0x3f4264d0,
     }]
@@ -70,7 +71,7 @@ def test_addsym_commands_empty_for_no_modules():
 def test_write_addsym_gdbinit_writes_literal_lines():
     import os
     loaded = [{
-        "name": "m", "sha1": "aa", "elf": "/t/m.elf",
+        "name": "m", "version": "1.0", "sha1": "aa", "elf": "/t/m.elf",
         "text": 0x10, "data": 0x20, "bss": 0x30, "rodata": 0x40,
     }]
     p = d.write_addsym_gdbinit(loaded)

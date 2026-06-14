@@ -5,7 +5,9 @@ Decode ESP32 core dumps with dynamically loaded ELF module symbols.
 The on-device module registry is read from the coredump by resolving the
 `s_mod_map` symbol via gdb and printing its fields with plain gdb `printf`
 commands (no gdb-Python: the Espressif toolchain gdb is built without Python
-scripting). Module frames are then symbolicated by handing gdb literal
+scripting). Each record holds the module name, version, its SHA1, and the
+runtime section bases. Module frames are
+then symbolicated by handing gdb literal
 `add-symbol-file <elf> <text> -s .data <data> ...` commands whose addresses are
 the runtime section bases read straight out of the registry.
 
@@ -13,7 +15,7 @@ Flow (host-driven, gdb invoked directly on a saved core ELF):
 
   1. esp-coredump converts the raw dump partition image into a core ELF
      (`--save-core`) and gives us the base panic/backtrace text.
-  2. plain gdb reads `s_mod_map` from the core ELF -> [{name, sha1, sections}].
+  2. plain gdb reads `s_mod_map` from the core ELF -> [{name, version, sha1, sections}].
   3. each module's debug ELF is resolved (server: by sha1; local CLI: by name).
   4. plain gdb re-runs with literal `add-symbol-file` per module and prints a
      module-symbolicated backtrace.
@@ -40,7 +42,7 @@ import tempfile
 SECTION_FIELDS = ("text", "data", "bss", "rodata")
 
 # Delimited line emitted by the gdb registry-read script, one per slot:
-#   MODSLOT|<i>|<name>|<sha1-hex>|<text>|<data>|<bss>|<rodata>
+#   MODSLOT|<i>|<name>|<version>|<sha1-hex>|<text>|<data>|<bss>|<rodata>
 MODSLOT_PREFIX = "MODSLOT|"
 NSLOTS_PREFIX = "NSLOTS="
 
@@ -107,29 +109,31 @@ def _gdb_batch(gdb: str, prog: str, core_elf: str, commands: list[str]) -> str:
 
 
 def _slot_printf(i: int) -> str:
-    """gdb `printf` command that emits one delimited MODSLOT line for slot i,
-    including the 20-byte sha1 as hex and the four section base addresses."""
+    """gdb `printf` command that emits one delimited MODSLOT line for slot i:
+    the module name and version, the 20-byte sha1 as hex, and the four section
+    base addresses."""
     sha = "".join("%02x" for _ in range(20))
     sha_args = ", ".join(f"s_mod_map[{i}].sha1[{b}]" for b in range(20))
     addr_args = ", ".join(f"s_mod_map[{i}].{s}.addr" for s in SECTION_FIELDS)
-    fmt = f"{MODSLOT_PREFIX}{i}|%s|{sha}|%u|%u|%u|%u\\n"
-    return f'printf "{fmt}", s_mod_map[{i}].name, {sha_args}, {addr_args}'
+    fmt = f"{MODSLOT_PREFIX}{i}|%s|%s|{sha}|%u|%u|%u|%u\\n"
+    return (f'printf "{fmt}", s_mod_map[{i}].name, '
+            f's_mod_map[{i}].version, {sha_args}, {addr_args}')
 
 
 def parse_registry_output(text: str) -> list[dict]:
     """Parse MODSLOT lines into occupied-slot records. Best-effort: a slot is
     occupied iff name is non-empty and text.addr != 0. Returns
-    [{name, sha1, text, data, bss, rodata}] with addresses as ints."""
+    [{name, version, sha1, text, data, bss, rodata}] with addresses as ints."""
     mods = []
     for line in text.splitlines():
         line = line.strip()
         if not line.startswith(MODSLOT_PREFIX):
             continue
         parts = line.split("|")
-        # MODSLOT | idx | name | sha1 | text | data | bss | rodata
-        if len(parts) != 8:
+        # MODSLOT | idx | name | version | sha1 | text | data | bss | rodata
+        if len(parts) != 9:
             continue
-        _, _idx, name, sha1, t, d, b, r = parts
+        _, _idx, name, version, sha1, t, d, b, r = parts
         try:
             text_addr, data_addr, bss_addr, rodata_addr = (
                 int(t) & 0xffffffff, int(d) & 0xffffffff,
@@ -140,7 +144,7 @@ def parse_registry_output(text: str) -> list[dict]:
         if not name or text_addr == 0:
             continue  # free or mid-load slot
         mods.append({
-            "name": name, "sha1": sha1,
+            "name": name, "version": version, "sha1": sha1,
             "text": text_addr, "data": data_addr,
             "bss": bss_addr, "rodata": rodata_addr,
         })
@@ -253,13 +257,12 @@ def main():
         loaded = []
         for r in regs:
             elf = by_name.get(r["name"])
+            ident = f"{r['name']} {r['version']} (sha1 {r['sha1'][:8]}...)"
             if elf:
                 loaded.append({**r, "elf": elf})
-                print(f"# module {r['name']} (sha1 {r['sha1'][:8]}...): symbols loaded",
-                      file=sys.stderr)
+                print(f"# module {ident}: symbols loaded", file=sys.stderr)
             else:
-                print(f"# module {r['name']} (sha1 {r['sha1'][:8]}...): no --module-elf, skipping",
-                      file=sys.stderr)
+                print(f"# module {ident}: no --module-elf, skipping", file=sys.stderr)
 
         if args.operation == "dbg":
             # Interactive esp-coredump session with module symbols pre-loaded
