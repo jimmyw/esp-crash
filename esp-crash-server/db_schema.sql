@@ -4,6 +4,10 @@ CREATE TABLE IF NOT EXISTS crash (crash_id SERIAL PRIMARY KEY, "date" TIMESTAMP,
 -- cron processing time so the crash list can render "Modules" tags without
 -- parsing every coredump per page load.
 ALTER TABLE crash ADD COLUMN IF NOT EXISTS module_names TEXT[];
+-- Per-module identity (name + wire-.app sha1) read from the coredump at cron
+-- time, so the crash detail page can render module tags + availability without
+-- re-running gdb on each page load. Availability is computed live from module_elf.
+ALTER TABLE crash ADD COLUMN IF NOT EXISTS module_map JSONB;
 CREATE TABLE IF NOT EXISTS elf_file (elf_file_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, project_ver TEXT, elf_file BYTEA, file_size INTEGER, project_alias TEXT);
 CREATE TABLE IF NOT EXISTS project_auth (project_auth_id SERIAL PRIMARY KEY, "date" TIMESTAMP, project_name TEXT, github TEXT);
 CREATE INDEX IF NOT EXISTS textsearch_idx ON crash USING GIN (textsearch);

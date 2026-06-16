@@ -165,16 +165,17 @@ as raw addresses.
 
 The device records a small **module registry** in a `COREDUMP_DRAM_ATTR`
 variable, so it is captured inside every coredump. Each record holds the
-module's name, the SHA1 of the over-the-wire `.app` bytes, and its section
-runtime addresses. There are two ways to use it:
+module's name, its version string, the SHA1 of the over-the-wire `.app` bytes,
+and its section runtime addresses. There are two ways to use it:
 
 - **Server-side (automatic):** pre-upload each module's debug ELF, keyed by the
   SHA1 of its `.app` bytes. When a dump arrives, the backend reads the registry,
   matches each module by SHA1, and symbolicates automatically.
 - **Local:** run `esp-crash-server/decode_module_coredump.py` against a dump you
-  downloaded, supplying each module ELF by name. The script reads the registry,
-  generates a GDB `add-symbol-file` line per module (placing each section at its
-  on-device runtime address), and hands it to `esp-coredump`.
+  downloaded, supplying each module ELF by name. The script runs `esp-coredump`
+  with a checked-in gdb macro that reads the registry symbolically (by the
+  `s_mod_map` symbol) and issues an `add-symbol-file` per module, each section
+  placed at its on-device runtime address as evaluated by gdb against the dump.
 
 ### Uploading module ELFs
 
@@ -216,114 +217,69 @@ python esp-crash-server/decode_module_coredump.py info \
 - Module names found in the dump with no matching `--module-elf` are skipped
   with a warning; the rest of the dump still decodes.
 
-### On-device registry format
+### On-device registry contract
 
-For the script to find your modules, the firmware must expose a registry in this
-exact binary layout (little-endian, 4-byte aligned). It is a magic-tagged header
-followed by a fixed-capacity array of module records; the script scans `PT_LOAD`
-segments of the coredump for the `MODM` magic.
+The decoder reads the module registry **symbolically** — it never scans the dump
+for a magic tag. Your firmware must expose a symbol named `s_mod_map` that is:
+
+- an **array of module records** (`mod_record_t s_mod_map[N]`), where `N` is your
+  concurrent-module cap;
+- placed in `COREDUMP_DRAM_ATTR` storage so it lands in every coredump;
+- present in the **program ELF with DWARF type info** (an unstripped, `-g` build —
+  the default). gdb reads the slot count from the array type and each field from
+  the dump, so there is no host-side knowledge of the byte layout.
+
+Each record must contain these fields (names matter — the gdb scripts reference
+them by name):
 
 ```
-registry { u32 magic = 0x4D4F444D ('MODM'); u8 capacity; u8 pad[3];
-           record  modules[capacity]; }
-record   { char name[64]; u8 sha1[20];
-           section text; section data; section bss; section rodata; }
-section  { u32 addr; u32 v_addr; u32 size; }
+record  { char name[]; char version[]; uint8_t sha1[20];
+          section text; section data; section bss; section rodata; }
+section { uint32_t addr; uint32_t v_addr; uint32_t size; }
 ```
 
-`addr` is the **runtime** address of the section (what GDB needs), `v_addr` is
-the ELF link-time virtual address, `size` is the section size. A slot is
-considered occupied only when `name[0] != 0` **and** `text.addr != 0`; zeroed
-slots (free) and slots with a name but `text.addr == 0` (mid-load) are skipped.
+`addr` is the **runtime** address of the section (what gdb's `add-symbol-file`
+needs), `v_addr` is the ELF link-time virtual address, `size` is the section size.
+A slot is occupied iff `name[0] != 0` **and** `text.addr != 0`; zeroed slots (free)
+and slots with a name but `text.addr == 0` (mid-load) are skipped.
 
 ### C example
-
-Declare the registry once, in `COREDUMP_DRAM_ATTR` storage so it lands in the
-dump, and populate a slot when you load a module:
 
 ```c
 #include "esp_attr.h"   // COREDUMP_DRAM_ATTR
 #include <stdint.h>
-#include <string.h>
 
-#define MOD_MAP_MAGIC        0x4D4F444DU  // 'MODM'
-#define MOD_MAP_MAX_MODULES  4            // your concurrent-module cap
-#define MOD_MAP_NAME_LEN     64
-#define MOD_MAP_SHA1_LEN     20
+#define MOD_MAP_MAX_MODULES  4   // your concurrent-module cap
 
 typedef struct {
-    uint32_t addr;    // runtime address (passed to GDB add-symbol-file)
+    uint32_t addr;    // runtime address (passed to add-symbol-file via gdb)
     uint32_t v_addr;  // ELF link-time virtual address
     uint32_t size;
 } mod_map_section_t;
 
 typedef struct {
-    char    name[MOD_MAP_NAME_LEN];
-    uint8_t sha1[MOD_MAP_SHA1_LEN];
-    mod_map_section_t text;
-    mod_map_section_t data;
-    mod_map_section_t bss;
-    mod_map_section_t rodata;
+    char    name[32];     // NUL-terminated module name
+    char    version[24];  // NUL-terminated version string (informational)
+    uint8_t sha1[20];
+    mod_map_section_t text, data, bss, rodata;
 } mod_record_t;
 
-// Layout is parsed byte-for-byte by decode_module_coredump.py — keep it pinned.
-_Static_assert(sizeof(mod_record_t) == 132, "mod_record layout drifted");
-
-typedef struct {
-    uint32_t magic;
-    uint8_t  capacity;
-    uint8_t  _pad[3];
-    mod_record_t modules[MOD_MAP_MAX_MODULES];
-} mod_map_registry_t;
-
-_Static_assert(offsetof(mod_map_registry_t, modules) == 8, "header drifted");
-
-// COREDUMP_DRAM_ATTR forces this into the .dram2.coredump region captured in
-// every coredump.
-COREDUMP_DRAM_ATTR static mod_map_registry_t s_mod_map = {
-    .magic    = MOD_MAP_MAGIC,
-    .capacity = MOD_MAP_MAX_MODULES,
-};
-
-// Call after a module's ELF is loaded. `sec_*` come from your ELF loader.
-void module_registry_record(const char *name, const uint8_t sha1[20],
-                            const mod_map_section_t *text,
-                            const mod_map_section_t *data,
-                            const mod_map_section_t *bss,
-                            const mod_map_section_t *rodata)
-{
-    for (uint8_t i = 0; i < MOD_MAP_MAX_MODULES; ++i) {
-        mod_record_t *r = &s_mod_map.modules[i];
-        if (r->name[0] != '\0') {
-            continue; // slot taken
-        }
-        memset(r, 0, sizeof(*r));
-        strlcpy(r->name, name, sizeof(r->name));
-        memcpy(r->sha1, sha1, MOD_MAP_SHA1_LEN);
-        r->text = *text; r->data = *data; r->bss = *bss; r->rodata = *rodata;
-        return;
-    }
-    // registry full — module won't be symbolicated, but the dump is still valid
-}
-
-// On unload, zero the slot so it reads as free.
-void module_registry_clear(const char *name)
-{
-    for (uint8_t i = 0; i < MOD_MAP_MAX_MODULES; ++i) {
-        if (strcmp(s_mod_map.modules[i].name, name) == 0) {
-            memset(&s_mod_map.modules[i], 0, sizeof(s_mod_map.modules[i]));
-            return;
-        }
-    }
-}
+// No magic, no capacity header: the decoder locates this by the `s_mod_map`
+// symbol and reads N from the DWARF array type.
+COREDUMP_DRAM_ATTR static mod_record_t s_mod_map[MOD_MAP_MAX_MODULES];
 ```
 
-The `sha1` field is the SHA1 of the over-the-wire `.app` bytes and is the join
-key for **server-side** symbolication: the backend matches it against the
-`app_sha1` you used when uploading the module ELF. The **local** script matches
-modules by name instead, so there `sha1` is only reported for confirmation. If
-you never use server-side symbolication you may leave it zeroed, but populating
-it is what makes the automatic path work.
+The `sha1` field is the SHA1 of the over-the-wire `.app` bytes and is the join key
+for **server-side** symbolication: the backend matches it against the `app_sha1`
+used when uploading the module ELF. The **local** CLI matches by name instead
+(it has the debug `.elf`, not the wire `.app`), so there `sha1` is informational.
+
+The `version` field is a free-form module version string (e.g.
+`"1560-a6f50c32-dirty"`). It is informational — not used for matching — and is
+surfaced on the crash page's module card alongside the name and SHA1. Field
+sizes are up to your firmware; the decoder reads each field symbolically by name
+from DWARF, so only the field **names** (`name`, `version`, `sha1`, the section
+members) must match.
 
 ## Example Output
 

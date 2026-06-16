@@ -90,6 +90,11 @@
                 </span>
                 {% endif %}
             </div>
+            {% if m.version %}
+            <div class="mt-2 text-xs text-gray-600 font-mono break-all">
+                version {{ m.version }}
+            </div>
+            {% endif %}
             <div class="mt-2 text-xs text-gray-500 font-mono break-all">
                 sha1 {{ m.sha1_full }}
             </div>
