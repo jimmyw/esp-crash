@@ -79,4 +79,4 @@ ENV FLASK_RUN_HOST=0.0.0.0
 
 ENV FLASK_ENV development
 #CMD ["flask", "--app", "server", "run", "--debug"]
-CMD ["gunicorn"  , "-b", "0.0.0.0:8000", "server:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "--workers", "8", "--timeout", "120", "server:app"]
