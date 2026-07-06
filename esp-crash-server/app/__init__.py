@@ -44,6 +44,9 @@ def create_app():
 
     config_module.configure_app(app)
 
+    from .models import db
+    db.init_app(app)
+
     app.jinja_env.filters['format_datetime'] = format_datetime
     app.jinja_env.filters['resolve_device_url'] = resolve_device_url
 

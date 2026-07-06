@@ -7,6 +7,9 @@ from functools import wraps
 
 from flask import current_app, redirect, session, url_for
 from flask_dance.contrib.github import github
+from sqlalchemy import select, true
+
+from .models import ProjectAuth
 
 
 def github_auth_enabled():
@@ -23,6 +26,27 @@ def auth_project_in_clause(project_column="project_name"):
     if github_auth_enabled():
         return f"{project_column} IN (SELECT project_name FROM project_auth WHERE github = %s)", (session.get("gh_user"),)
     return "TRUE", ()
+
+
+def auth_filter(column=ProjectAuth.github):
+    """SQLAlchemy equivalent of auth_clause: a boolean ColumnElement to pass
+    to .where(...). In no-auth mode it's the tautology TRUE (no filtering);
+    under github auth it restricts to the current user's rows."""
+    if github_auth_enabled():
+        return column == session.get("gh_user")
+    return true()
+
+
+def auth_project_in_filter(project_column):
+    """SQLAlchemy equivalent of auth_project_in_clause: restrict `project_column`
+    to projects the current user has a project_auth row for."""
+    if github_auth_enabled():
+        return project_column.in_(
+            select(ProjectAuth.project_name).where(
+                ProjectAuth.github == session.get("gh_user")
+            )
+        )
+    return true()
 
 
 def login_required(f):

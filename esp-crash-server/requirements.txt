@@ -5,6 +5,7 @@ pyelftools
 gunicorn
 flask_dance
 SQLAlchemy
+alembic
 flask-login
 flask-caching
 flask_sqlalchemy

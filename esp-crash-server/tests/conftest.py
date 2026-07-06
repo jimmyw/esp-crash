@@ -18,26 +18,21 @@ import os
 import psycopg2
 import pytest
 
-SCHEMA_FILES = (
-    "db_schema.sql",
-    "slack_migration.sql",
-    "project_settings_migration.sql",
-)
-
-# Schema files live one directory up, at the esp-crash-server root.
+# esp-crash-server root, one directory up from tests/.
 _SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _load_schema(dsn):
-    conn = psycopg2.connect(dsn)
-    try:
-        with conn.cursor() as cur:
-            for filename in SCHEMA_FILES:
-                with open(os.path.join(_SERVER_ROOT, filename)) as f:
-                    cur.execute(f.read())
-        conn.commit()
-    finally:
-        conn.close()
+def _load_schema():
+    """Build the test DB schema by running the Alembic migrations to head -
+    the same path a real install now uses - so the suite validates that the
+    migrations reproduce the schema the routes expect. Reads the DB URL from
+    the POSTGRES_* env vars the caller has already exported."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(os.path.join(_SERVER_ROOT, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(_SERVER_ROOT, "alembic"))
+    command.upgrade(cfg, "head")
 
 
 @pytest.fixture(scope="session")
@@ -56,7 +51,7 @@ def _pg():
         os.environ["POSTGRES_PASSWORD"] = parsed.password or ""
         os.environ["POSTGRES_DB"] = (parsed.path or "/esp-crash").lstrip("/")
         os.environ["POSTGRES_SSLMODE"] = "disable"
-        _load_schema(dsn_override)
+        _load_schema()
         yield dsn_override
         return
 
@@ -81,7 +76,7 @@ def _pg():
         os.environ["POSTGRES_DB"] = "esp-crash"
         os.environ["POSTGRES_SSLMODE"] = "disable"
         dsn = f"postgresql://esp-crash:esp-crash@{host}:{port}/esp-crash"
-        _load_schema(dsn)
+        _load_schema()
         yield dsn
 
 
@@ -134,7 +129,17 @@ def db_clean(server_module, _admin_conn):
     """
     yield
     from app import db as db_module
+    from app.models import db as sa_db
 
+    # Release the SQLAlchemy connection back to the pool (ends any open
+    # transaction) so it can't hold locks that stall the TRUNCATE below.
+    with server_module.app.app_context():
+        sa_db.session.remove()
+
+    # Legacy hand-rolled connection: still used by not-yet-migrated routes.
+    # DBManager only rolls back at the *start* of the next cursor() call, so a
+    # SELECT-only request leaves it idle-in-transaction holding an
+    # AccessShareLock that would deadlock the TRUNCATE. Roll it back first.
     if db_module.conn is not None:
         db_module.conn.connection.rollback()
     with _admin_conn.cursor() as cur:
