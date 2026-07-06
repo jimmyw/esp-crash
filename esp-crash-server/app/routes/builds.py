@@ -8,9 +8,10 @@ import tempfile
 import zipfile
 
 from flask import redirect, request, send_file, url_for
+from sqlalchemy import delete, select, update
 
-from ..auth import auth_clause, auth_project_in_clause, login_required
-from ..db import ldb
+from ..auth import auth_filter, auth_project_in_filter, login_required
+from ..models import ElfFile, ProjectAuth, db
 from ..rendering import render_template
 
 
@@ -18,17 +19,14 @@ from ..rendering import render_template
 def show_build(build_id):
     """Display details for a specific build."""
     #app.logger.info(build_id)
-    builds = ldb().get_data("""
-        SELECT
-            elf_file_id as build_id,
-            project_name as build_name,
-            project_ver as build_ver,
-            project_alias as build_alias
-        FROM
-            elf_file
-        WHERE
-            elf_file_id = %s
-    """, (build_id,))
+    builds = db.session.execute(
+        select(
+            ElfFile.elf_file_id.label("build_id"),
+            ElfFile.project_name.label("build_name"),
+            ElfFile.project_ver.label("build_ver"),
+            ElfFile.project_alias.label("build_alias"),
+        ).where(ElfFile.elf_file_id == build_id)
+    ).mappings().all()
     if len(builds) == 1:
         return render_template('build.html', build = builds[0])
     return "Build not found", 400
@@ -40,15 +38,10 @@ def update_build_alias(build_id):
     # Extract the new alias from the POST data
     new_alias = request.form.get('alias')
 
-    c = ldb().cursor()
-    res = c.execute("""
-        UPDATE elf_file
-        SET project_alias = %s
-        WHERE elf_file_id = %s
-        RETURNING elf_file_id
-    """, (new_alias, build_id))
-    ldb().commit()
-    print(res)
+    db.session.execute(
+        update(ElfFile).where(ElfFile.elf_file_id == build_id).values(project_alias=new_alias)
+    )
+    db.session.commit()
     return show_build(build_id)
 
 
@@ -57,19 +50,14 @@ def download_build(build_id):
     """Download ELF build data as a zip archive."""
 
     # Fetch all elf image data from database that matches this project and version
-    auth_where, auth_args = auth_clause("project_auth.github")
-    elf_images = ldb().get_data("""
-    SELECT
-        elf_file.elf_file_id, elf_file.date, elf_file.project_name, elf_file.project_ver, elf_file.elf_file
-    FROM
-        elf_file
-    LEFT JOIN
-        project_auth USING (project_name)
-    WHERE
-        elf_file_id = %s AND
-        """ + auth_where + """
-
-    """, (build_id,) + auth_args)
+    elf_images = db.session.execute(
+        select(
+            ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
+            ElfFile.project_ver, ElfFile.elf_file,
+        )
+        .outerjoin(ProjectAuth, ElfFile.project_name == ProjectAuth.project_name)
+        .where(ElfFile.elf_file_id == build_id, auth_filter(ProjectAuth.github))
+    ).mappings().all()
 
     zipf = tempfile.NamedTemporaryFile(delete=False)
     with zipfile.ZipFile(zipf.name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -108,16 +96,19 @@ def download_build(build_id):
 @login_required
 def delete_elf(elf_file_id):
     # Select project_name from the deleted elf_file to redirect appropriately after delete
-    auth_where, auth_args = auth_project_in_clause("project_name")
-    project_data = ldb().get_data("SELECT project_name FROM elf_file WHERE elf_file_id = %s AND " + auth_where, (elf_file_id,) + auth_args)
+    af = auth_project_in_filter(ElfFile.project_name)
+    project_data = db.session.execute(
+        select(ElfFile.project_name).where(ElfFile.elf_file_id == elf_file_id, af)
+    ).mappings().all()
     if len(project_data) < 1:
         return "Not found", 404
     project_name = project_data[0]["project_name"]
 
     """Delete an uploaded ELF build."""
-    c = ldb().cursor()
-    c.execute("DELETE FROM elf_file WHERE elf_file_id = %s AND " + auth_where, (elf_file_id,) + auth_args)
-    ldb().commit()
+    db.session.execute(
+        delete(ElfFile).where(ElfFile.elf_file_id == elf_file_id, af)
+    )
+    db.session.commit()
 
     return redirect(url_for('list_builds', project_name=project_name), code=302)
 
