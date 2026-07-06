@@ -71,6 +71,7 @@ WORKDIR /code
 COPY server.py .
 COPY decode_module_coredump.py /code
 COPY device_url.py .
+COPY app/ app/
 COPY templates/ templates/
 
 ENV FLASK_APP=server.py

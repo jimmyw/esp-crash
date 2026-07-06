@@ -27,9 +27,9 @@ def _fake_resolve(db, dump_path, prog_path):
 
 
 def test_cron_processes_pending_crash(client, db_conn, monkeypatch):
-    import server
+    from app import decode
 
-    monkeypatch.setattr(server, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
 
     device_id = helpers.create_device(db_conn, "dev-cron-2")
     helpers.create_elf_file(db_conn, "proj-cron-ok", "1.0")
@@ -45,9 +45,10 @@ def test_cron_processes_pending_crash(client, db_conn, monkeypatch):
 
 
 def test_cron_sends_webhook(client, db_conn, monkeypatch):
-    import server
+    import requests
+    from app import decode
 
-    monkeypatch.setattr(server, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
 
     calls = []
 
@@ -59,7 +60,7 @@ def test_cron_sends_webhook(client, db_conn, monkeypatch):
         calls.append((url, json))
         return FakeResponse()
 
-    monkeypatch.setattr(server.requests, "post", fake_post)
+    monkeypatch.setattr(requests, "post", fake_post)
 
     device_id = helpers.create_device(db_conn, "dev-cron-3")
     helpers.create_elf_file(db_conn, "proj-cron-wh", "1.0")
@@ -74,9 +75,10 @@ def test_cron_sends_webhook(client, db_conn, monkeypatch):
 
 
 def test_cron_sends_slack_notification(client, db_conn, monkeypatch):
-    import server
+    import slack_sdk
+    from app import decode
 
-    monkeypatch.setattr(server, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
 
     posted = []
 
@@ -88,7 +90,7 @@ def test_cron_sends_slack_notification(client, db_conn, monkeypatch):
             posted.append(kwargs)
             return {"ok": True}
 
-    monkeypatch.setattr(server, "WebClient", lambda token=None: FakeSlack(token=token))
+    monkeypatch.setattr(slack_sdk, "WebClient", lambda token=None: FakeSlack(token=token))
 
     device_id = helpers.create_device(db_conn, "dev-cron-4")
     helpers.create_elf_file(db_conn, "proj-cron-slack", "1.0")

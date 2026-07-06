@@ -21,7 +21,7 @@ def test_download_crash_without_elf_images(client, db_conn):
 
 
 def test_download_crash_with_elf_resolves_modules_mocked(client, db_conn, monkeypatch):
-    import server
+    from app import decode
 
     helpers.create_project(db_conn, "proj-dl2", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-dl2")
@@ -31,7 +31,7 @@ def test_download_crash_with_elf_resolves_modules_mocked(client, db_conn, monkey
     def fake_resolve(db, dump_path, prog_path):
         return ([], [], "base text", None, ["# module test: symbols not available"])
 
-    monkeypatch.setattr(server, "_resolve_modules_for_dump", fake_resolve)
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", fake_resolve)
 
     resp = client.get(f"/crash/{crash_id}/download")
     assert resp.status_code == 200

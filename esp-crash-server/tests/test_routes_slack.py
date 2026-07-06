@@ -26,9 +26,9 @@ class FakeSlackClient:
 
 
 def _patch_webclient(monkeypatch, **responses):
-    import server
+    import slack_sdk
 
-    monkeypatch.setattr(server, "WebClient", lambda token=None: FakeSlackClient(token=token, **responses))
+    monkeypatch.setattr(slack_sdk, "WebClient", lambda token=None: FakeSlackClient(token=token, **responses))
 
 
 # --- slack_auth -----------------------------------------------------------
@@ -63,7 +63,7 @@ def test_slack_callback_missing_project_session(client):
 
 
 def test_slack_callback_success(client, monkeypatch):
-    import server
+    import requests
 
     with client.session_transaction() as sess:
         sess["slack_auth_project"] = "proj-cb"
@@ -72,7 +72,7 @@ def test_slack_callback_success(client, monkeypatch):
         def json(self):
             return {"ok": True, "access_token": "xoxb-fake", "team": {"id": "T1", "name": "Team1"}}
 
-    monkeypatch.setattr(server.requests, "post", lambda *a, **kw: FakeResp())
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResp())
 
     resp = client.get("/slack/callback?code=abc123")
     assert resp.status_code == 302

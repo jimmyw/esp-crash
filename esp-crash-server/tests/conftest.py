@@ -121,7 +121,7 @@ TABLES_TO_TRUNCATE = (
 def db_clean(server_module, _admin_conn):
     """Truncate all tables after every test for isolation.
 
-    server.py's DBManager.cursor() calls connection.rollback() on every
+    app/db.py's DBManager.cursor() calls connection.rollback() on every
     acquisition and commits explicitly on writes, so the classic
     wrap-in-a-transaction-and-roll-back trick doesn't work here - the app
     manages commits on its own long-lived connection.
@@ -133,8 +133,10 @@ def db_clean(server_module, _admin_conn):
     deadlocks the TRUNCATE below. Roll it back ourselves first.
     """
     yield
-    if server_module.conn is not None:
-        server_module.conn.connection.rollback()
+    from app import db as db_module
+
+    if db_module.conn is not None:
+        db_module.conn.connection.rollback()
     with _admin_conn.cursor() as cur:
         cur.execute(
             "TRUNCATE " + ", ".join(TABLES_TO_TRUNCATE) + " RESTART IDENTITY CASCADE;"
@@ -162,9 +164,11 @@ def client(app):
 def github_auth_unauthenticated(server_module, monkeypatch):
     """AUTH_TYPE=github with no GitHub token - login_required should redirect
     to the OAuth login view."""
+    from app import auth as auth_module
+
     app = server_module.app
     monkeypatch.setitem(app.config, "AUTH_TYPE", "github")
-    monkeypatch.setattr(server_module, "github", _FakeGithub(authorized=False))
+    monkeypatch.setattr(auth_module, "github", _FakeGithub(authorized=False))
     return app.test_client()
 
 
@@ -172,11 +176,13 @@ def github_auth_unauthenticated(server_module, monkeypatch):
 def github_client(server_module, monkeypatch):
     """Factory: a test client authenticated as a fake GitHub user under
     AUTH_TYPE=github, with a project_auth-seedable session["gh_user"]."""
+    from app import auth as auth_module
+
     app = server_module.app
 
     def _login_as(username):
         monkeypatch.setitem(app.config, "AUTH_TYPE", "github")
-        monkeypatch.setattr(server_module, "github", _FakeGithub(username=username))
+        monkeypatch.setattr(auth_module, "github", _FakeGithub(username=username))
         client = app.test_client()
         with client.session_transaction() as sess:
             sess["gh_user"] = username
@@ -187,7 +193,7 @@ def github_client(server_module, monkeypatch):
 
 class _FakeGithub:
     """Stand-in for flask_dance's `github` LocalProxy, swapped into
-    server.py's module namespace so login_required's `github.authorized` /
+    app/auth.py's module namespace so login_required's `github.authorized` /
     `github.get(...)` calls never hit the network."""
 
     def __init__(self, authorized=True, username=None):
