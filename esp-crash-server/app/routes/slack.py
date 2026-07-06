@@ -17,7 +17,7 @@ from flask import current_app, redirect, request, session, url_for
 from slack_sdk.errors import SlackApiError
 from sqlalchemy import delete, insert, select, update
 
-from ..auth import auth_filter, login_required
+from ..auth import auth_filter, auth_project_in_filter, login_required
 from ..models import ProjectAuth, ProjectSlackIntegration, db
 from ..rendering import external_url_for, render_template
 
@@ -245,12 +245,15 @@ def slack_channel_selection_post(project_name):
 @login_required
 def delete_slack_integration(project_name, integration_id):
     """Delete a Slack integration."""
-    # Permission check and delete
+    # Permission check and delete. Scope to the caller's projects via a
+    # project_auth membership subquery (no-op TRUE in no-auth mode). The
+    # original spliced a bare `github` column onto this table, which has none -
+    # a no-op under no-auth but a 500 under github auth.
     db.session.execute(
         delete(ProjectSlackIntegration).where(
             ProjectSlackIntegration.slack_integration_id == integration_id,
             ProjectSlackIntegration.project_name == project_name,
-            auth_filter(ProjectAuth.github),
+            auth_project_in_filter(ProjectSlackIntegration.project_name),
         )
     )
     db.session.commit()
@@ -266,13 +269,14 @@ def update_slack_channel(project_name, integration_id):
     if not channel_id or not channel_name:
         return "Missing channel information", 400
 
-    # Update channel information
+    # Update channel information. Same project-membership scoping as
+    # delete_slack_integration (see there).
     db.session.execute(
         update(ProjectSlackIntegration)
         .where(
             ProjectSlackIntegration.slack_integration_id == integration_id,
             ProjectSlackIntegration.project_name == project_name,
-            auth_filter(ProjectAuth.github),
+            auth_project_in_filter(ProjectSlackIntegration.project_name),
         )
         .values(slack_channel_id=channel_id, slack_channel_name=channel_name)
     )
