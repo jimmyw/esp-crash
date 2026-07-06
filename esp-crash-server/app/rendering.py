@@ -4,9 +4,10 @@ chunked-transfer-encoding before_request hook. Adapted to use
 flask.current_app instead of a module-global `app` (see app/auth.py for
 why)."""
 from flask import current_app, url_for, request
+from sqlalchemy import func, select
 
-from .auth import auth_clause
-from .db import ldb
+from .auth import auth_filter
+from .models import Crash, ProjectAuth, db
 
 
 def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
@@ -31,18 +32,18 @@ def external_url_for(endpoint, **values):
 
 def render_template(template_name, **context):
     """Render a template with project list context."""
-    auth_where, auth_args = auth_clause("project_auth.github")
-    projects = ldb().get_data("""
-        SELECT
-            project_name,
-            (SELECT COUNT(crash_id) FROM crash WHERE crash.project_name = project_auth.project_name) AS crash_count
-        FROM
-            project_auth
-        WHERE
-            """ + auth_where + """
-        ORDER BY
-            project_name ASC
-    """, auth_args)
+    crash_count = (
+        select(func.count(Crash.crash_id))
+        .where(Crash.project_name == ProjectAuth.project_name)
+        .scalar_subquery()
+        .label("crash_count")
+    )
+    stmt = (
+        select(ProjectAuth.project_name, crash_count)
+        .where(auth_filter(ProjectAuth.github))
+        .order_by(ProjectAuth.project_name.asc())
+    )
+    projects = db.session.execute(stmt).mappings().all()
     return current_app.jinja_env.get_template(template_name).render(projects=projects, **context)
 
 
