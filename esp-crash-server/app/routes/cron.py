@@ -12,30 +12,29 @@ import requests
 import slack_sdk
 from flask import current_app
 from slack_sdk.errors import SlackApiError
+from sqlalchemy import func, select, update
 
 import decode_module_coredump as mod_decoder
 from .. import decode
-from ..db import ldb
+from ..models import Crash, ElfFile, ProjectSlackIntegration, ProjectWebhook, db
 from ..rendering import external_url_for
 
 
 def cron():
     """Process pending crash dumps and send webhooks."""
 
-    c = ldb().cursor()
     # Fetch all crashes from database that has not been processed
-    crashes = ldb().get_data("""
-        SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.project_ver, crash.crash_dmp
-        FROM
-            crash
-        WHERE
-            dump IS NULL AND
-            (select count(e.elf_file_id) from elf_file as e where e.project_name = crash.project_name and e.project_ver = crash.project_ver) > 0
-        ORDER BY
-            crash.crash_id DESC
-        LIMIT 10
-        """)
+    elf_count = (
+        select(func.count(ElfFile.elf_file_id))
+        .where(ElfFile.project_name == Crash.project_name, ElfFile.project_ver == Crash.project_ver)
+        .scalar_subquery()
+    )
+    crashes = db.session.execute(
+        select(Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver, Crash.crash_dmp)
+        .where(Crash.dump.is_(None), elf_count > 0)
+        .order_by(Crash.crash_id.desc())
+        .limit(10)
+    ).mappings().all()
     # If no crash data is found, return "Not found"
     if len(crashes) < 1:
         return "Nothing to do\n", 200
@@ -45,7 +44,14 @@ def cron():
         current_app.logger.info("Processing crash {} project_name '{}' date '{}'".format(crash["crash_id"], crash["project_name"], crash["date"]))
 
         # Fetch all elf image data from database that matches this project and version
-        elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+        elf_images = db.session.execute(
+            select(
+                ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
+                ElfFile.project_ver, ElfFile.elf_file,
+            )
+            .where(ElfFile.project_name == crash["project_name"], ElfFile.project_ver == crash["project_ver"])
+            .order_by(ElfFile.date.desc())
+        ).mappings().all()
 
         dump = ""
         if len(elf_images) < 1:
@@ -92,18 +98,20 @@ def cron():
                     except OSError:
                         pass
 
-        from psycopg2.extras import Json
         module_names = [m["name"] for m in last_module_map]
-        c.execute(
-            "UPDATE crash SET dump = %s, module_names = %s, module_map = %s WHERE crash_id = %s",
-            (dump, module_names, Json(last_module_map), crash["crash_id"]),
+        db.session.execute(
+            update(Crash)
+            .where(Crash.crash_id == crash["crash_id"])
+            .values(dump=dump, module_names=module_names, module_map=last_module_map)
         )
-        ldb().commit()
+        db.session.commit()
         current_app.logger.info("Updated crash {} (modules: {})".format(crash["crash_id"], module_names))
 
         # Send webhooks
         project_name = crash["project_name"]
-        webhooks = ldb().get_data("SELECT webhook_url FROM project_webhooks WHERE project_name = %s", (project_name,))
+        webhooks = db.session.execute(
+            select(ProjectWebhook.webhook_url).where(ProjectWebhook.project_name == project_name)
+        ).mappings().all()
 
         if webhooks:
             current_app.logger.info(f"Found {len(webhooks)} webhooks for project {project_name}")
@@ -135,11 +143,13 @@ def cron():
             current_app.logger.info(f"No webhooks found for project {project_name}")
 
         # Send Slack notifications
-        slack_integrations = ldb().get_data("""
-            SELECT slack_access_token, slack_channel_id, slack_channel_name
-            FROM project_slack_integrations
-            WHERE project_name = %s
-        """, (project_name,))
+        slack_integrations = db.session.execute(
+            select(
+                ProjectSlackIntegration.slack_access_token,
+                ProjectSlackIntegration.slack_channel_id,
+                ProjectSlackIntegration.slack_channel_name,
+            ).where(ProjectSlackIntegration.project_name == project_name)
+        ).mappings().all()
 
         if slack_integrations:
             current_app.logger.info(f"Found {len(slack_integrations)} Slack integrations for project {project_name}")
