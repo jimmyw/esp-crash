@@ -4,11 +4,16 @@ server.py - routes and logic unchanged, endpoint names preserved exactly
 (registered directly on the app object, not via Flask Blueprint - see
 core.py for why)."""
 from flask import current_app, redirect, request, session, url_for
+from sqlalchemy import delete, func, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from device_url import DEVICE_ID_PLACEHOLDER, device_url_template_is_valid
 
-from ..auth import auth_clause, login_required
-from ..db import ldb
+from ..auth import auth_filter, login_required
+from ..models import (
+    Crash, Device, ElfFile, ProjectAuth, ProjectSettings,
+    ProjectSlackIntegration, ProjectWebhook, db,
+)
 from ..rendering import render_template
 
 
@@ -19,58 +24,47 @@ def list_project_crashes(project_name):
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
 
-    where_part, args = auth_clause("project_auth.github")
-    where_part += " "
+    conditions = [auth_filter(ProjectAuth.github)]
     if project_name:
-        where_part += "AND crash.project_name = %s "
-        args = args + (project_name,)
+        conditions.append(Crash.project_name == project_name)
     if search and len(search) > 0:
-        where_part += "AND textsearch @@ plainto_tsquery(%s) "
-        args = args + (search,)
-    args = args + (limit, offset,)
+        conditions.append(Crash.textsearch.op("@@")(func.plainto_tsquery(search)))
 
-    crashes = ldb().get_data("""
-        SELECT
-            crash.crash_id,
-            crash.date,
-            crash.project_name,
-            crash.device_id,
-            crash.project_ver,
-            crash.module_names,
-            array_agg(elf_file.elf_file_id) FILTER (WHERE elf_file.elf_file_id IS NOT NULL) as elf_file_id,
-            array_agg(elf_file.project_alias) as project_alias,
-            device.ext_device_id,
-            device.alias,
-            project_settings.device_url_template,
-            count(*) OVER() AS full_count
-        FROM
-            crash
-        JOIN
-            project_auth USING (project_name)
-        LEFT JOIN
-            elf_file USING (project_name, project_ver)
-        LEFT JOIN
-            device USING (device_id)
-        LEFT JOIN
-            project_settings USING (project_name)
-        WHERE
-        """ + where_part + """
-        GROUP BY
-            crash.crash_id,
-            crash.date,
-            crash.project_name,
-            crash.device_id,
-            crash.project_ver,
-            device.ext_device_id,
-            device.alias,
-            project_settings.device_url_template
-        ORDER BY
-            crash.date DESC, crash.crash_id
-        LIMIT
-            %s
-        OFFSET
-            %s
-    """, args)
+    crashes = db.session.execute(
+        select(
+            Crash.crash_id,
+            Crash.date,
+            Crash.project_name,
+            Crash.device_id,
+            Crash.project_ver,
+            Crash.module_names,
+            func.array_agg(ElfFile.elf_file_id).filter(ElfFile.elf_file_id.isnot(None)).label("elf_file_id"),
+            func.array_agg(ElfFile.project_alias).label("project_alias"),
+            Device.ext_device_id,
+            Device.alias,
+            ProjectSettings.device_url_template,
+            func.count().over().label("full_count"),
+        )
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .outerjoin(ElfFile, (Crash.project_name == ElfFile.project_name) & (Crash.project_ver == ElfFile.project_ver))
+        .outerjoin(Device, Crash.device_id == Device.device_id)
+        .outerjoin(ProjectSettings, Crash.project_name == ProjectSettings.project_name)
+        .where(*conditions)
+        .group_by(
+            Crash.crash_id,
+            Crash.date,
+            Crash.project_name,
+            Crash.device_id,
+            Crash.project_ver,
+            Device.ext_device_id,
+            Device.alias,
+            ProjectSettings.device_url_template,
+        )
+        .order_by(Crash.date.desc(), Crash.crash_id)
+        .limit(limit)
+        .offset(offset)
+    ).mappings().all()
 
     # crash.module_names is populated at cron processing time, so no per-row
     # coredump parsing happens here.
@@ -90,29 +84,17 @@ def create_project():
     project_name = request.form['project_name']
     if len(project_name) < 1:
         return "Missing project_name", 400
-    c = ldb().cursor()
 
-    auth_where, auth_args = auth_clause("project_auth.github")
-    projects = ldb().get_data("""
-        SELECT
-            project_name
-        FROM
-            project_auth
-        WHERE
-            project_name = %s AND
-            """ + auth_where + """
-    """, (project_name,) + auth_args)
+    projects = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if len(projects) > 0:
         return "Project already registred, ask admin for invite", 400
-    c.execute("""
-        INSERT INTO
-            project_auth
-            ("date" , project_name, github)
-        VALUES
-            (NOW(), %s, %s)
-
-        """, (project_name, session["gh_user"]))
-    ldb().commit()
+    db.session.execute(
+        insert(ProjectAuth).values(date=func.now(), project_name=project_name, github=session["gh_user"])
+    )
+    db.session.commit()
     return redirect(url_for("list_project_crashes", project_name=project_name), code=302)
 
 
@@ -122,35 +104,29 @@ def list_builds(project_name):
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
 
-    auth_where, auth_args = auth_clause("project_auth.github")
-    builds = ldb().get_data("""
-        SELECT
-            elf_file.elf_file_id,
-            elf_file.date,
-            elf_file.project_name,
-            elf_file.project_ver,
-            elf_file.project_alias,
-            elf_file.file_size,
-            COALESCE(crash_counts.crash_count, 0) AS crash_count,
-            count(*) OVER() AS full_count
-        FROM
-            elf_file
-        JOIN
-            project_auth USING (project_name)
-        LEFT JOIN LATERAL (
-            SELECT COUNT(*) as crash_count
-            FROM crash
-            WHERE crash.project_name = elf_file.project_name
-            AND crash.project_ver = elf_file.project_ver
-        ) crash_counts ON true
-        WHERE
-            elf_file.project_name = %s AND
-            """ + auth_where + """
-        ORDER BY elf_file.date DESC
-        LIMIT %s
-        OFFSET %s
-
-    """, (project_name,) + auth_args + (limit, offset))
+    crash_count = (
+        select(func.count())
+        .where(Crash.project_name == ElfFile.project_name, Crash.project_ver == ElfFile.project_ver)
+        .scalar_subquery()
+    )
+    builds = db.session.execute(
+        select(
+            ElfFile.elf_file_id,
+            ElfFile.date,
+            ElfFile.project_name,
+            ElfFile.project_ver,
+            ElfFile.project_alias,
+            ElfFile.file_size,
+            func.coalesce(crash_count, 0).label("crash_count"),
+            func.count().over().label("full_count"),
+        )
+        .select_from(ElfFile)
+        .join(ProjectAuth, ElfFile.project_name == ProjectAuth.project_name)
+        .where(ElfFile.project_name == project_name, auth_filter(ProjectAuth.github))
+        .order_by(ElfFile.date.desc())
+        .limit(limit)
+        .offset(offset)
+    ).mappings().all()
     return render_template('builds.html', elfs = builds, project_name = project_name, limit=limit, offset=offset,  full_count = builds[0]["full_count"] if len(builds) > 0 else 0)
 
 
@@ -163,18 +139,11 @@ def list_acl(project_name):
 @login_required
 def create_acl(project_name):
     """Add a GitHub user to a project's access list."""
-    c = ldb().cursor()
-    auth_where, auth_args = auth_clause("github")
-    acls = ldb().get_data("""
-        SELECT
-            project_name
-        FROM
-            project_auth
-        WHERE
-            """ + auth_where + """ AND
-            project_name = %s
-        LIMIT 1
-    """, auth_args + (project_name,))
+    acls = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(auth_filter(ProjectAuth.github), ProjectAuth.project_name == project_name)
+        .limit(1)
+    ).mappings().all()
 
     if len(acls) < 1:
         return "No access to create for this project", 500
@@ -182,83 +151,75 @@ def create_acl(project_name):
     if len(github) < 1:
         return "Missing github name", 400
 
-    acls = ldb().get_data("""
-        SELECT
-            github
-        FROM
-            project_auth
-        WHERE
-            project_name = %s AND
-            github = %s
-    """, (project_name, github,))
+    acls = db.session.execute(
+        select(ProjectAuth.github)
+        .where(ProjectAuth.project_name == project_name, ProjectAuth.github == github)
+    ).mappings().all()
 
     if len(acls) > 0:
         return "User already exists", 400
 
-    c.execute("""
-        INSERT INTO
-            project_auth
-            ("date" , project_name, github)
-        VALUES
-            (NOW(), %s, %s)
-
-        """, (project_name, github))
-    ldb().commit()
+    db.session.execute(
+        insert(ProjectAuth).values(date=func.now(), project_name=project_name, github=github)
+    )
+    db.session.commit()
     return redirect(url_for("project_settings", project_name = project_name), code=302)
 
 
 @login_required
 def delete_acl(project_name, github):
     """Remove a GitHub user from a project's access list."""
-    c = ldb().cursor()
-    auth_where, auth_args = auth_clause("github")
-    c.execute("""
-        DELETE FROM
-            project_auth
-        WHERE
-            github = %s AND
-            project_name = %s AND
-            """ + auth_where + """
-    """, (github, project_name) + auth_args)
-    ldb().commit()
+    db.session.execute(
+        delete(ProjectAuth).where(
+            ProjectAuth.github == github,
+            ProjectAuth.project_name == project_name,
+            auth_filter(ProjectAuth.github),
+        )
+    )
+    db.session.commit()
     return redirect(url_for("project_settings", project_name = project_name), code=302)
 
 
 @login_required
 def project_settings(project_name):
     """Display and manage settings for a specific project."""
-    db = ldb()
     # Verify user has access to this project
-    auth_where, auth_args = auth_clause("github")
-    allowed = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    allowed = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not allowed:
         return "Forbidden: You do not have access to this project.", 403
 
-    acls = db.get_data("""
-        SELECT github, date, project_name
-        FROM project_auth
-        WHERE project_name = %s
-        ORDER BY date DESC
-    """, (project_name,))
+    acls = db.session.execute(
+        select(ProjectAuth.github, ProjectAuth.date, ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name)
+        .order_by(ProjectAuth.date.desc())
+    ).mappings().all()
 
-    cur = db.cursor()
-    cur.execute("SELECT webhook_id, webhook_url FROM project_webhooks WHERE project_name = %s ORDER BY webhook_id", (project_name,))
-    webhooks_list = cur.fetchall()
+    # Rows (tuple-like) rather than mappings: the template indexes webhook[0]
+    # / webhook[1], matching the original raw cursor().fetchall() shape.
+    webhooks_list = db.session.execute(
+        select(ProjectWebhook.webhook_id, ProjectWebhook.webhook_url)
+        .where(ProjectWebhook.project_name == project_name)
+        .order_by(ProjectWebhook.webhook_id)
+    ).all()
 
     # Get Slack integrations
-    slack_integrations = db.get_data("""
-        SELECT slack_integration_id, slack_team_id, slack_team_name, slack_channel_id, slack_channel_name, created_date
-        FROM project_slack_integrations
-        WHERE project_name = %s
-        ORDER BY created_date DESC
-    """, (project_name,))
+    slack_integrations = db.session.execute(
+        select(
+            ProjectSlackIntegration.slack_integration_id, ProjectSlackIntegration.slack_team_id,
+            ProjectSlackIntegration.slack_team_name, ProjectSlackIntegration.slack_channel_id,
+            ProjectSlackIntegration.slack_channel_name, ProjectSlackIntegration.created_date,
+        )
+        .where(ProjectSlackIntegration.project_name == project_name)
+        .order_by(ProjectSlackIntegration.created_date.desc())
+    ).mappings().all()
 
-    settings_row = db.get_data(
-        "SELECT device_url_template FROM project_settings WHERE project_name = %s",
-        (project_name,))
+    settings_row = db.session.execute(
+        select(ProjectSettings.device_url_template)
+        .where(ProjectSettings.project_name == project_name)
+    ).mappings().all()
     device_url_template = settings_row[0]['device_url_template'] if settings_row else ''
 
     return render_template('project_settings.html',
@@ -275,15 +236,11 @@ def project_settings(project_name):
 @login_required
 def project_webhooks_admin(project_name):
     """Manage webhooks for a project."""
-    db = ldb()
-    cur = db.cursor()
-
     # Permission check: Ensure user is authorized for this project
-    auth_where, auth_args = auth_clause("github")
-    auth_check = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not auth_check:
         return "Forbidden: You do not have access to this project's webhooks.", 403
 
@@ -297,16 +254,18 @@ def project_webhooks_admin(project_name):
                 return "Webhook URL cannot be empty.", 400
 
             # Check if webhook_url already exists for this project
-            cur.execute("SELECT webhook_id FROM project_webhooks WHERE project_name = %s AND webhook_url = %s", (project_name, webhook_url))
-            if cur.fetchone():
+            existing = db.session.execute(
+                select(ProjectWebhook.webhook_id)
+                .where(ProjectWebhook.project_name == project_name, ProjectWebhook.webhook_url == webhook_url)
+            ).first()
+            if existing:
                 # Optionally, flash a message: "Webhook URL already exists for this project."
                 pass # Or return some error/message
             else:
-                cur.execute("""
-                    INSERT INTO project_webhooks (project_name, webhook_url)
-                    VALUES (%s, %s)
-                """, (project_name, webhook_url))
-                db.commit()
+                db.session.execute(
+                    insert(ProjectWebhook).values(project_name=project_name, webhook_url=webhook_url)
+                )
+                db.session.commit()
 
         elif action == 'delete':
             webhook_id = request.form.get('webhook_id')
@@ -315,11 +274,11 @@ def project_webhooks_admin(project_name):
 
             # The permission check at the beginning covers project-level access.
             # Deleting by webhook_id and project_name ensures we only delete from the correct project.
-            cur.execute("""
-                DELETE FROM project_webhooks
-                WHERE webhook_id = %s AND project_name = %s
-            """, (webhook_id, project_name))
-            db.commit()
+            db.session.execute(
+                delete(ProjectWebhook)
+                .where(ProjectWebhook.webhook_id == webhook_id, ProjectWebhook.project_name == project_name)
+            )
+            db.session.commit()
 
         return redirect(url_for('project_settings', project_name=project_name))
 
@@ -330,15 +289,11 @@ def project_webhooks_admin(project_name):
 @login_required
 def project_device_url_admin(project_name):
     """Save (or clear) the per-project device-id URL template."""
-    db = ldb()
-    cur = db.cursor()
-
     # Permission check: same gate as the rest of the project settings.
-    auth_where, auth_args = auth_clause("github")
-    auth_check = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -348,12 +303,15 @@ def project_device_url_admin(project_name):
     if not device_url_template_is_valid(template):
         return redirect(url_for('project_settings', project_name=project_name, device_url_error='1'))
 
-    cur.execute("""
-        INSERT INTO project_settings (project_name, device_url_template)
-        VALUES (%s, %s)
-        ON CONFLICT (project_name) DO UPDATE SET device_url_template = EXCLUDED.device_url_template
-    """, (project_name, template or None))
-    db.commit()
+    stmt = pg_insert(ProjectSettings).values(
+        project_name=project_name, device_url_template=(template or None)
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["project_name"],
+        set_={"device_url_template": stmt.excluded.device_url_template},
+    )
+    db.session.execute(stmt)
+    db.session.commit()
 
     return redirect(url_for('project_settings', project_name=project_name))
 
