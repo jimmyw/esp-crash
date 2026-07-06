@@ -73,6 +73,10 @@ COPY decode_module_coredump.py /code
 COPY device_url.py .
 COPY app/ app/
 COPY templates/ templates/
+# Alembic migrations + config, so `alembic stamp head` / `alembic upgrade head`
+# can run inside the container at deploy time.
+COPY alembic.ini .
+COPY alembic/ alembic/
 
 ENV FLASK_APP=server.py
 ENV FLASK_RUN_PORT=8000
