@@ -15,23 +15,21 @@ import requests
 import slack_sdk
 from flask import current_app, redirect, request, session, url_for
 from slack_sdk.errors import SlackApiError
+from sqlalchemy import delete, insert, select, update
 
-from ..auth import auth_clause, login_required
-from ..db import ldb
+from ..auth import auth_filter, login_required
+from ..models import ProjectAuth, ProjectSlackIntegration, db
 from ..rendering import external_url_for, render_template
 
 
 @login_required
 def slack_auth(project_name):
     """Initiate Slack OAuth flow for a project."""
-    db = ldb()
-
     # Permission check: Ensure user is authorized for this project
-    auth_where, auth_args = auth_clause("github")
-    auth_check = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -136,12 +134,10 @@ def slack_channel_selection(project_name):
         return "Session expired or invalid. Please try adding Slack integration again.", 400
 
     # Permission check
-    db = ldb()
-    auth_where, auth_args = auth_clause("github")
-    auth_check = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
@@ -195,34 +191,45 @@ def slack_channel_selection_post(project_name):
         return "Please select a channel.", 400
 
     try:
-        # Store Slack integration in database
-        db = ldb()
-        cur = db.cursor()
-
         # Check if integration already exists for this team
-        existing = db.get_data("""
-            SELECT slack_integration_id FROM project_slack_integrations
-            WHERE project_name = %s AND slack_team_id = %s
-        """, (project_name, oauth_data['team_id']))
+        existing = db.session.execute(
+            select(ProjectSlackIntegration.slack_integration_id)
+            .where(
+                ProjectSlackIntegration.project_name == project_name,
+                ProjectSlackIntegration.slack_team_id == oauth_data['team_id'],
+            )
+        ).mappings().all()
 
         if existing:
             # Update existing integration
-            cur.execute("""
-                UPDATE project_slack_integrations
-                SET slack_access_token = %s, slack_team_name = %s, slack_channel_id = %s, slack_channel_name = %s
-                WHERE project_name = %s AND slack_team_id = %s
-            """, (oauth_data['access_token'], oauth_data['team_name'], selected_channel_id, selected_channel_name,
-                  project_name, oauth_data['team_id']))
+            db.session.execute(
+                update(ProjectSlackIntegration)
+                .where(
+                    ProjectSlackIntegration.project_name == project_name,
+                    ProjectSlackIntegration.slack_team_id == oauth_data['team_id'],
+                )
+                .values(
+                    slack_access_token=oauth_data['access_token'],
+                    slack_team_name=oauth_data['team_name'],
+                    slack_channel_id=selected_channel_id,
+                    slack_channel_name=selected_channel_name,
+                )
+            )
         else:
             # Create new integration
-            cur.execute("""
-                INSERT INTO project_slack_integrations
-                (project_name, slack_team_id, slack_team_name, slack_channel_id, slack_channel_name, slack_access_token, github_user)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (project_name, oauth_data['team_id'], oauth_data['team_name'], selected_channel_id, selected_channel_name,
-                  oauth_data['access_token'], session.get("gh_user")))
+            db.session.execute(
+                insert(ProjectSlackIntegration).values(
+                    project_name=project_name,
+                    slack_team_id=oauth_data['team_id'],
+                    slack_team_name=oauth_data['team_name'],
+                    slack_channel_id=selected_channel_id,
+                    slack_channel_name=selected_channel_name,
+                    slack_access_token=oauth_data['access_token'],
+                    github_user=session.get("gh_user"),
+                )
+            )
 
-        db.commit()
+        db.session.commit()
 
         # Clean up session
         session.pop('slack_oauth_data', None)
@@ -238,19 +245,15 @@ def slack_channel_selection_post(project_name):
 @login_required
 def delete_slack_integration(project_name, integration_id):
     """Delete a Slack integration."""
-    db = ldb()
-    cur = db.cursor()
-
     # Permission check and delete
-    auth_where, auth_args = auth_clause("github")
-    cur.execute("""
-        DELETE FROM project_slack_integrations
-        WHERE slack_integration_id = %s
-        AND project_name = %s
-        AND """ + auth_where + """
-    """, (integration_id, project_name) + auth_args)
-
-    db.commit()
+    db.session.execute(
+        delete(ProjectSlackIntegration).where(
+            ProjectSlackIntegration.slack_integration_id == integration_id,
+            ProjectSlackIntegration.project_name == project_name,
+            auth_filter(ProjectAuth.github),
+        )
+    )
+    db.session.commit()
     return redirect(url_for('project_settings', project_name=project_name))
 
 
@@ -263,43 +266,39 @@ def update_slack_channel(project_name, integration_id):
     if not channel_id or not channel_name:
         return "Missing channel information", 400
 
-    db = ldb()
-    cur = db.cursor()
-
     # Update channel information
-    auth_where, auth_args = auth_clause("github")
-    cur.execute("""
-        UPDATE project_slack_integrations
-        SET slack_channel_id = %s, slack_channel_name = %s
-        WHERE slack_integration_id = %s
-        AND project_name = %s
-        AND """ + auth_where + """
-    """, (channel_id, channel_name, integration_id, project_name) + auth_args)
-
-    db.commit()
+    db.session.execute(
+        update(ProjectSlackIntegration)
+        .where(
+            ProjectSlackIntegration.slack_integration_id == integration_id,
+            ProjectSlackIntegration.project_name == project_name,
+            auth_filter(ProjectAuth.github),
+        )
+        .values(slack_channel_id=channel_id, slack_channel_name=channel_name)
+    )
+    db.session.commit()
     return redirect(url_for('project_settings', project_name=project_name))
 
 
 @login_required
 def test_slack_integration(project_name):
     """Test Slack integration by sending a test message."""
-    db = ldb()
-
     # Permission check
-    auth_where, auth_args = auth_clause("github")
-    auth_check = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
     # Get Slack integrations
-    slack_integrations = db.get_data("""
-        SELECT slack_access_token, slack_channel_id, slack_channel_name, slack_team_id, slack_team_name
-        FROM project_slack_integrations
-        WHERE project_name = %s
-    """, (project_name,))
+    slack_integrations = db.session.execute(
+        select(
+            ProjectSlackIntegration.slack_access_token, ProjectSlackIntegration.slack_channel_id,
+            ProjectSlackIntegration.slack_channel_name, ProjectSlackIntegration.slack_team_id,
+            ProjectSlackIntegration.slack_team_name,
+        ).where(ProjectSlackIntegration.project_name == project_name)
+    ).mappings().all()
 
     if not slack_integrations:
         return "No Slack integrations found for this project.", 404
@@ -464,23 +463,22 @@ def test_slack_integration(project_name):
 @login_required
 def verify_slack_integration(project_name):
     """Verify Slack integration settings and permissions."""
-    db = ldb()
-
     # Permission check
-    auth_where, auth_args = auth_clause("github")
-    auth_check = db.get_data("""
-        SELECT project_name FROM project_auth
-        WHERE project_name = %s AND """ + auth_where + """
-    """, (project_name,) + auth_args)
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
     if not auth_check:
         return "Forbidden: You do not have access to this project.", 403
 
     # Get Slack integrations with enhanced info
-    slack_integrations = db.get_data("""
-        SELECT slack_integration_id, slack_access_token, slack_channel_id, slack_channel_name, slack_team_name, slack_team_id
-        FROM project_slack_integrations
-        WHERE project_name = %s
-    """, (project_name,))
+    slack_integrations = db.session.execute(
+        select(
+            ProjectSlackIntegration.slack_integration_id, ProjectSlackIntegration.slack_access_token,
+            ProjectSlackIntegration.slack_channel_id, ProjectSlackIntegration.slack_channel_name,
+            ProjectSlackIntegration.slack_team_name, ProjectSlackIntegration.slack_team_id,
+        ).where(ProjectSlackIntegration.project_name == project_name)
+    ).mappings().all()
 
     if not slack_integrations:
         return render_template('slack_verification.html',
