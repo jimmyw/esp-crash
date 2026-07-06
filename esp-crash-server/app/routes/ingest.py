@@ -7,17 +7,15 @@ browser users)."""
 import re
 import bz2
 
-import psycopg2
 from flask import current_app, request
+from sqlalchemy import func, insert, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..db import ldb
+from ..models import Crash, Device, ElfFile, ModuleElf, db
 
 
 def dump():
     """Upload a crash dump from a device."""
-    # Connect to the database
-    conn = ldb()
-
     # Check if a file is included in the request
     if 'file' not in request.files:
         return "No file part", 400
@@ -62,38 +60,42 @@ def dump():
     if not "DEVICE_ID" in arguments:
         return "Missing or invalid device identifier", 400
 
-    # Execute the SQL query to insert the compressed content into the database
-    cursor = conn.cursor()
-
-
     # Rate limiting: Check if device has uploaded more than 5 crashes in the last hour
-    cursor.execute('''
-        SELECT COUNT(*)
-        FROM crash
-        JOIN device USING (device_id)
-        WHERE ext_device_id = %s
-        AND date >= NOW() - INTERVAL '1 hour'
-    ''', (arguments["DEVICE_ID"],))
-    crash_count = cursor.fetchone()[0]
+    crash_count = db.session.execute(
+        select(func.count())
+        .select_from(Crash)
+        .join(Device, Crash.device_id == Device.device_id)
+        .where(
+            Device.ext_device_id == arguments["DEVICE_ID"],
+            Crash.date >= text("now() - interval '1 hour'"),
+        )
+    ).scalar()
 
     if crash_count >= 5:
         return "Rate limit exceeded: Maximum 5 crashes per device per hour", 429
 
-    cursor.execute('INSERT INTO device (ext_device_id) VALUES (%s) ON CONFLICT (ext_device_id) DO UPDATE SET ext_device_id = EXCLUDED.ext_device_id RETURNING device_id', (arguments["DEVICE_ID"],))
-    device_id = cursor.fetchone()[0]
-    cursor.execute('INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id) VALUES (NOW(), %s, %s, %s, %s)',
-    (arguments["PROJECT_NAME"], arguments["PROJECT_VER"], psycopg2.Binary(compressed_content), device_id))
+    upsert = pg_insert(Device).values(ext_device_id=arguments["DEVICE_ID"])
+    upsert = upsert.on_conflict_do_update(
+        index_elements=["ext_device_id"],
+        set_={"ext_device_id": upsert.excluded.ext_device_id},
+    ).returning(Device.device_id)
+    device_id = db.session.execute(upsert).scalar()
+
+    db.session.execute(insert(Crash).values(
+        date=func.now(),
+        project_name=arguments["PROJECT_NAME"],
+        project_ver=arguments["PROJECT_VER"],
+        crash_dmp=compressed_content,
+        device_id=device_id,
+    ))
 
     # Commit the changes and close the connection
-    conn.commit()
+    db.session.commit()
     return "OK", 200
 
 
 def upload_elf():
     """Upload an ELF file containing build information."""
-    # Connect to the database
-    conn = ldb()
-
     # Check if the file is in the request
     if 'file' not in request.files:
         return "No file part", 500
@@ -150,12 +152,16 @@ def upload_elf():
 
 
     # Execute the SQL query to insert the compressed file content into the database
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO elf_file (date, project_name, project_ver, elf_file, file_size) VALUES (NOW(), %s, %s, %s, %s)',
-    (project_name, project_ver, psycopg2.Binary(compressed_content), len(compressed_content)))
+    db.session.execute(insert(ElfFile).values(
+        date=func.now(),
+        project_name=project_name,
+        project_ver=project_ver,
+        elf_file=compressed_content,
+        file_size=len(compressed_content),
+    ))
 
     # Commit the changes and close the connection
-    conn.commit()
+    db.session.commit()
 
     # Return a success message
     return "OK", 200
@@ -188,17 +194,15 @@ def upload_module_elf():
         compressed = bz2.compress(raw)
         uncompressed_size = len(raw)
 
-    db = ldb()
-    cur = db.cursor()
-    cur.execute(
-        """
-        INSERT INTO module_elf (date, name, app_sha1, elf_file, file_size)
-        VALUES (NOW(), %s, %s, %s, %s)
-        ON CONFLICT (app_sha1) DO NOTHING
-        """,
-        (name, app_sha1, psycopg2.Binary(compressed), uncompressed_size),
-    )
-    db.commit()
+    stmt = pg_insert(ModuleElf).values(
+        date=func.now(),
+        name=name,
+        app_sha1=app_sha1,
+        elf_file=compressed,
+        file_size=uncompressed_size,
+    ).on_conflict_do_nothing(index_elements=["app_sha1"])
+    db.session.execute(stmt)
+    db.session.commit()
     current_app.logger.info(f"Stored module_elf name={name} app_sha1={app_sha1} size={uncompressed_size}")
     return "OK\n", 200
 
