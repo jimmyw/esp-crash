@@ -7,9 +7,8 @@ from sqlalchemy.engine import URL
 
 
 def database_uri():
-    """Build the SQLAlchemy DB URL from the same POSTGRES_* env vars the
-    legacy app/db.py ldb() reads, so the ORM connects to the exact same
-    database with the exact same defaults (user esp-crash, port 5432, db
+    """Build the SQLAlchemy DB URL from the POSTGRES_* env vars, with the
+    same defaults the app has always used (user esp-crash, port 5432, db
     esp-crash, sslmode prefer). Also imported by the Alembic env."""
     password = os.environ.get("POSTGRES_PASSWORD")
     password_file = os.environ.get("POSTGRES_PASSWORD_FILE")

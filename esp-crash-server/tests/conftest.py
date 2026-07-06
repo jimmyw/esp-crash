@@ -116,32 +116,16 @@ TABLES_TO_TRUNCATE = (
 def db_clean(server_module, _admin_conn):
     """Truncate all tables after every test for isolation.
 
-    app/db.py's DBManager.cursor() calls connection.rollback() on every
-    acquisition and commits explicitly on writes, so the classic
-    wrap-in-a-transaction-and-roll-back trick doesn't work here - the app
-    manages commits on its own long-lived connection.
-
-    A SELECT-only request (e.g. a page render) leaves the app's connection
-    "idle in transaction" until the *next* query rolls it back (DBManager
-    only rolls back at the start of the next cursor() call, not at the end
-    of a request). Left alone, that dangling transaction's AccessShareLock
-    deadlocks the TRUNCATE below. Roll it back ourselves first.
+    Release the SQLAlchemy connection back to the pool first (ending any
+    transaction a SELECT-only request left open) so it can't hold an
+    AccessShareLock that would deadlock the TRUNCATE below.
     """
     yield
-    from app import db as db_module
     from app.models import db as sa_db
 
-    # Release the SQLAlchemy connection back to the pool (ends any open
-    # transaction) so it can't hold locks that stall the TRUNCATE below.
     with server_module.app.app_context():
         sa_db.session.remove()
 
-    # Legacy hand-rolled connection: still used by not-yet-migrated routes.
-    # DBManager only rolls back at the *start* of the next cursor() call, so a
-    # SELECT-only request leaves it idle-in-transaction holding an
-    # AccessShareLock that would deadlock the TRUNCATE. Roll it back first.
-    if db_module.conn is not None:
-        db_module.conn.connection.rollback()
     with _admin_conn.cursor() as cur:
         cur.execute(
             "TRUNCATE " + ", ".join(TABLES_TO_TRUNCATE) + " RESTART IDENTITY CASCADE;"
