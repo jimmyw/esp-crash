@@ -1,0 +1,144 @@
+import helpers
+
+
+def test_create_project_success_redirects(client):
+    resp = client.post("/projects/create", data={"project_name": "new-proj"})
+    assert resp.status_code == 302
+    assert "/projects/new-proj" in resp.headers["Location"]
+
+
+def test_create_project_missing_name_400(client):
+    resp = client.post("/projects/create", data={"project_name": ""})
+    assert resp.status_code == 400
+
+
+def test_create_project_duplicate_400(client, db_conn):
+    helpers.create_project(db_conn, "dup-proj", github_user="none")
+    resp = client.post("/projects/create", data={"project_name": "dup-proj"})
+    assert resp.status_code == 400
+
+
+def test_list_project_crashes_empty(client, db_conn):
+    helpers.create_project(db_conn, "proj-x", github_user="none")
+    resp = client.get("/projects/proj-x")
+    assert resp.status_code == 200
+    assert b"proj-x" in resp.data
+
+
+def test_list_project_crashes_shows_seeded_crash(client, db_conn):
+    helpers.create_project(db_conn, "proj-y", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-1")
+    helpers.create_crash(db_conn, "proj-y", "1.0", device_id, dump="some dump text")
+    resp = client.get("/projects/proj-y")
+    assert resp.status_code == 200
+    assert b"dev-1" in resp.data
+
+
+def test_list_project_crashes_search_filters(client, db_conn):
+    helpers.create_project(db_conn, "proj-z", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-2")
+    helpers.create_crash(db_conn, "proj-z", "2.0", device_id)
+    resp = client.get("/projects/proj-z?search=nonexistent-term")
+    assert resp.status_code == 200
+    assert b"dev-2" not in resp.data
+
+
+def test_list_crashes_all_projects(client, db_conn):
+    helpers.create_project(db_conn, "proj-all", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-3")
+    helpers.create_crash(db_conn, "proj-all", "1.0", device_id)
+    resp = client.get("/crash")
+    assert resp.status_code == 200
+    assert b"dev-3" in resp.data
+
+
+def test_list_builds_empty(client, db_conn):
+    helpers.create_project(db_conn, "proj-b", github_user="none")
+    resp = client.get("/projects/proj-b/builds")
+    assert resp.status_code == 200
+
+
+def test_list_builds_shows_seeded_elf(client, db_conn):
+    helpers.create_project(db_conn, "proj-b2", github_user="none")
+    helpers.create_elf_file(db_conn, "proj-b2", "1.0", project_alias="my-alias")
+    resp = client.get("/projects/proj-b2/builds")
+    assert resp.status_code == 200
+    assert b"my-alias" in resp.data
+
+
+def test_project_settings_forbidden_for_unregistered_project(client):
+    resp = client.get("/projects/no-such-project/settings")
+    assert resp.status_code == 403
+
+
+def test_project_settings_renders_for_registered_project(client, db_conn):
+    helpers.create_project(db_conn, "proj-s", github_user="none")
+    resp = client.get("/projects/proj-s/settings")
+    assert resp.status_code == 200
+    assert b"proj-s" in resp.data
+
+
+def test_device_url_admin_valid_template(client, db_conn):
+    helpers.create_project(db_conn, "proj-d", github_user="none")
+    resp = client.post(
+        "/projects/proj-d/settings/device-url",
+        data={"device_url_template": "https://x.test/{device_id}"},
+    )
+    assert resp.status_code == 302
+    assert "device_url_error" not in resp.headers["Location"]
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT device_url_template FROM project_settings WHERE project_name = %s",
+            ("proj-d",),
+        )
+        row = cur.fetchone()
+    assert row[0] == "https://x.test/{device_id}"
+
+
+def test_device_url_admin_invalid_template_redirects_with_error(client, db_conn):
+    helpers.create_project(db_conn, "proj-d2", github_user="none")
+    resp = client.post(
+        "/projects/proj-d2/settings/device-url",
+        data={"device_url_template": "javascript:alert(1)/{device_id}"},
+    )
+    assert resp.status_code == 302
+    assert "device_url_error=1" in resp.headers["Location"]
+
+
+def test_webhooks_add_and_delete(client, db_conn):
+    helpers.create_project(db_conn, "proj-w", github_user="none")
+
+    resp = client.post(
+        "/projects/proj-w/webhooks",
+        data={"action": "add", "webhook_url": "https://hooks.test/abc"},
+    )
+    assert resp.status_code == 302
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT webhook_id FROM project_webhooks WHERE project_name = %s",
+            ("proj-w",),
+        )
+        webhook_id = cur.fetchone()[0]
+
+    resp = client.post(
+        "/projects/proj-w/webhooks",
+        data={"action": "delete", "webhook_id": webhook_id},
+    )
+    assert resp.status_code == 302
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM project_webhooks WHERE project_name = %s",
+            ("proj-w",),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_webhooks_forbidden_for_unregistered_project(client):
+    resp = client.post(
+        "/projects/no-such-project/webhooks",
+        data={"action": "add", "webhook_url": "https://hooks.test/abc"},
+    )
+    assert resp.status_code == 403
