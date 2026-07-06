@@ -28,7 +28,7 @@ def test_download_crash_with_elf_resolves_modules_mocked(client, db_conn, monkey
     crash_id = helpers.create_crash(db_conn, "proj-dl2", "1.0", device_id, crash_dmp=b"dump-content")
     helpers.create_elf_file(db_conn, "proj-dl2", "1.0")
 
-    def fake_resolve(db, dump_path, prog_path):
+    def fake_resolve(dump_path, prog_path):
         return ([], [], "base text", None, ["# module test: symbols not available"])
 
     monkeypatch.setattr(decode, "_resolve_modules_for_dump", fake_resolve)

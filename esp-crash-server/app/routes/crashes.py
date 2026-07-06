@@ -9,10 +9,11 @@ import tempfile
 import zipfile
 
 from flask import redirect, send_file, url_for
+from sqlalchemy import delete, func, select, update
 
 from .. import decode
-from ..auth import auth_clause, auth_project_in_clause, login_required
-from ..db import ldb
+from ..auth import auth_filter, auth_project_in_filter, login_required
+from ..models import Crash, Device, ElfFile, ModuleElf, ProjectAuth, ProjectSettings, db
 from ..rendering import render_template
 
 
@@ -27,22 +28,20 @@ def show_project_crash(project_name, crash_id):
     """Display crash details for a project."""
 
     # Fetch crash data from database
-    auth_where, auth_args = auth_clause("project_auth.github")
-    crash = ldb().get_data("""
-        SELECT
-            crash.crash_id, crash.date, crash.project_name, crash.device_id, crash.project_ver, crash.crash_dmp, device.ext_device_id, COALESCE(device.alias, '') as device_alias, crash.dump, project_settings.device_url_template, crash.module_map
-        FROM
-            crash
-        JOIN
-            project_auth USING (project_name)
-        JOIN
-            device USING (device_id)
-        LEFT JOIN
-            project_settings USING (project_name)
-        WHERE
-            crash_id = %s AND """ + auth_where + """
-        ORDER BY
-            date DESC""", (crash_id,) + auth_args)
+    crash = db.session.execute(
+        select(
+            Crash.crash_id, Crash.date, Crash.project_name, Crash.device_id,
+            Crash.project_ver, Crash.crash_dmp, Device.ext_device_id,
+            func.coalesce(Device.alias, "").label("device_alias"), Crash.dump,
+            ProjectSettings.device_url_template, Crash.module_map,
+        )
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .join(Device, Crash.device_id == Device.device_id)
+        .outerjoin(ProjectSettings, Crash.project_name == ProjectSettings.project_name)
+        .where(Crash.crash_id == crash_id, auth_filter(ProjectAuth.github))
+        .order_by(Crash.date.desc())
+    ).mappings().all()
     # If no crash data is found, return "Not found"
     if len(crash) != 1:
         return "Not found", 404
@@ -50,7 +49,14 @@ def show_project_crash(project_name, crash_id):
     crash = crash[0]
 
     # Fetch all elf image data from database that matches this project and version
-    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, file_size, project_alias FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+    elf_images = db.session.execute(
+        select(
+            ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
+            ElfFile.project_ver, ElfFile.file_size, ElfFile.project_alias,
+        )
+        .where(ElfFile.project_name == crash["project_name"], ElfFile.project_ver == crash["project_ver"])
+        .order_by(ElfFile.date.desc())
+    ).mappings().all()
 
     # Module tags come from the persisted module_map (written at cron time).
     # Availability is computed live because a module ELF may be uploaded after
@@ -58,9 +64,9 @@ def show_project_crash(project_name, crash_id):
     modules_for_ui = []
     for e in (crash.get("module_map") or []):
         sha1 = e.get("sha1", "")
-        row = ldb().get_data(
-            "SELECT module_elf_id FROM module_elf WHERE app_sha1 = %s LIMIT 1", (sha1,)
-        )
+        row = db.session.execute(
+            select(ModuleElf.module_elf_id).where(ModuleElf.app_sha1 == sha1).limit(1)
+        ).first()
         modules_for_ui.append({
             "name": e.get("name", ""),
             "version": e.get("version", ""),
@@ -76,22 +82,19 @@ def show_project_crash(project_name, crash_id):
 def refresh_crash(project_name, crash_id):
     """Clear cached dump data so it will be reprocessed."""
 
-    # Fetch crash data from database
-    auth_where, auth_args = auth_clause("project_auth.github")
-    refresh = """
-        UPDATE
-            crash
-        SET
-            dump = NULL
-        FROM
-            project_auth
-        WHERE
-            crash.crash_id = %s AND crash.project_name = project_auth.project_name AND """ + auth_where + """
-        """
-
-    c = ldb().cursor()
-    c.execute(refresh, (crash_id,) + auth_args)
-    ldb().commit()
+    # Clear dump only when a matching project_auth row exists (original used
+    # UPDATE ... FROM project_auth, so an absent grant left the row untouched).
+    db.session.execute(
+        update(Crash)
+        .where(
+            Crash.crash_id == crash_id,
+            Crash.project_name.in_(
+                select(ProjectAuth.project_name).where(auth_filter(ProjectAuth.github))
+            ),
+        )
+        .values(dump=None)
+    )
+    db.session.commit()
 
     return redirect(url_for('show_project_crash', project_name=project_name, crash_id=crash_id))
 
@@ -101,20 +104,17 @@ def download_crash(crash_id):
     """Download a crash dump along with related ELF files."""
 
     # Fetch crash data from database
-    auth_where, auth_args = auth_clause("project_auth.github")
-    crash = ldb().get_data("""
-        SELECT
-            crash.crash_id, crash.date, crash.project_name, device.ext_device_id, crash.project_ver, crash.crash_dmp
-        FROM
-            crash
-        JOIN
-            project_auth USING (project_name)
-        JOIN
-            device USING (device_id)
-        WHERE
-            crash_id = %s AND """ + auth_where + """
-        ORDER BY
-            date DESC""", (crash_id,) + auth_args)
+    crash = db.session.execute(
+        select(
+            Crash.crash_id, Crash.date, Crash.project_name, Device.ext_device_id,
+            Crash.project_ver, Crash.crash_dmp,
+        )
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .join(Device, Crash.device_id == Device.device_id)
+        .where(Crash.crash_id == crash_id, auth_filter(ProjectAuth.github))
+        .order_by(Crash.date.desc())
+    ).mappings().all()
     # If no crash data is found, return "Not found"
     if len(crash) != 1:
         return "Not found", 404
@@ -122,7 +122,14 @@ def download_crash(crash_id):
     crash = crash[0]
 
     # Fetch all elf image data from database that matches this project and version
-    elf_images = ldb().get_data("SELECT elf_file_id, date, project_name, project_ver, elf_file FROM elf_file WHERE project_name = %s AND project_ver = %s ORDER BY date DESC", (crash["project_name"], crash["project_ver"], ))
+    elf_images = db.session.execute(
+        select(
+            ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
+            ElfFile.project_ver, ElfFile.elf_file,
+        )
+        .where(ElfFile.project_name == crash["project_name"], ElfFile.project_ver == crash["project_ver"])
+        .order_by(ElfFile.date.desc())
+    ).mappings().all()
 
     zipf = tempfile.NamedTemporaryFile(delete=False)
     with zipfile.ZipFile(zipf.name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -154,7 +161,7 @@ def download_crash(crash_id):
                     pf.write(first)
                     prog_tmp = pf.name
                 _regs, loaded, _base, core_elf, mod_status = \
-                    decode._resolve_modules_for_dump(ldb(), dmp.name, prog_tmp)
+                    decode._resolve_modules_for_dump(dmp.name, prog_tmp)
             gdbinit_lines = []
             if loaded:
                 for m in loaded:
@@ -247,10 +254,13 @@ def download_crash(crash_id):
 @login_required
 def delete_crash(project_name, crash_id):
     """Delete a crash entry."""
-    c = ldb().cursor()
-    auth_where, auth_args = auth_project_in_clause("project_name")
-    c.execute("DELETE FROM crash WHERE crash_id = %s AND " + auth_where, (crash_id,) + auth_args)
-    ldb().commit()
+    db.session.execute(
+        delete(Crash).where(
+            Crash.crash_id == crash_id,
+            auth_project_in_filter(Crash.project_name),
+        )
+    )
+    db.session.commit()
     return redirect(f"/projects/{project_name}", code=302)
 
 

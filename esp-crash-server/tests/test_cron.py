@@ -20,7 +20,7 @@ def test_cron_ignores_crash_without_elf(client, db_conn):
     assert resp.data == b"Nothing to do\n"
 
 
-def _fake_resolve(db, dump_path, prog_path):
+def _fake_resolve(dump_path, prog_path):
     fd, core_elf = tempfile.mkstemp()
     os.close(fd)
     return ([], [], "base panic text\n", core_elf, [])

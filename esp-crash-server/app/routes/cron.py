@@ -69,7 +69,7 @@ def cron():
 
             # Read the registry (plain gdb) and resolve module ELFs by sha1.
             regs, loaded, base_text, core_elf, mod_status = \
-                decode._resolve_modules_for_dump(ldb(), dmp.name, elf.name)
+                decode._resolve_modules_for_dump(dmp.name, elf.name)
             last_module_map = [{"name": r["name"], "version": r.get("version", ""), "sha1": r["sha1"]} for r in regs]
             try:
                 for line in mod_status:

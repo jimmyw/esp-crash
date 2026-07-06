@@ -8,10 +8,14 @@ import os
 import bz2
 import tempfile
 
+from sqlalchemy import select
+
 import decode_module_coredump as mod_decoder
 
+from .models import ModuleElf, db
 
-def _resolve_modules_for_dump(db, dump_path, prog_path):
+
+def _resolve_modules_for_dump(dump_path, prog_path):
     """
     Read the on-device module registry from the coredump (plain gdb, no Python:
     the toolchain gdb has no scripting) and resolve each module's debug ELF from
@@ -34,18 +38,18 @@ def _resolve_modules_for_dump(db, dump_path, prog_path):
         regs = mod_decoder.read_registry(core_elf, prog_path)
         for entry in regs:
             sha1 = entry.get("sha1", "")
-            rows = db.get_data(
-                "SELECT elf_file FROM module_elf WHERE app_sha1 = %s LIMIT 1", (sha1,)
-            )
-            if not rows:
+            blob_data = db.session.execute(
+                select(ModuleElf.elf_file).where(ModuleElf.app_sha1 == sha1).limit(1)
+            ).scalars().first()
+            if blob_data is None:
                 status.append(
                     f"# module {entry['name']} (sha1 {sha1[:8]}...): symbols not available"
                 )
                 continue
             try:
-                blob = bz2.decompress(rows[0]["elf_file"])
+                blob = bz2.decompress(blob_data)
             except IOError:
-                blob = rows[0]["elf_file"]
+                blob = blob_data
             with tempfile.NamedTemporaryFile(suffix=".elf", delete=False, prefix="mod_") as ef:
                 ef.write(blob)
             loaded.append({**entry, "elf": ef.name})
