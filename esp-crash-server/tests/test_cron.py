@@ -103,6 +103,77 @@ def test_cron_sends_slack_notification(client, db_conn, monkeypatch):
     assert posted[0]["channel"] == "C123"
 
 
+def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch, app):
+    from app import decode
+    from app.routes import cron
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    calls = []
+    monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append((crash_id, project_name)))
+    app.config["MCP_SERVICE_GITHUB_USER"] = "esp-crash-bot"
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-1")
+    helpers.create_project(db_conn, "proj-cron-ai-granted", github_user="esp-crash-bot")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-granted", "1.0")
+    granted_crash = helpers.create_crash(db_conn, "proj-cron-ai-granted", "1.0", device_id, crash_dmp=b"raw-dump")
+
+    # No project_auth grant for esp-crash-bot on this project - must be skipped.
+    helpers.create_elf_file(db_conn, "proj-cron-ai-ungranted", "1.0")
+    helpers.create_crash(db_conn, "proj-cron-ai-ungranted", "1.0", device_id, crash_dmp=b"raw-dump")
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+    assert calls == [(granted_crash, "proj-cron-ai-granted")]
+
+
+def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, app):
+    from app import decode
+    from app.routes import cron
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    calls = []
+    monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append(crash_id))
+    app.config["MCP_SERVICE_GITHUB_USER"] = "esp-crash-bot"
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-2")
+    helpers.create_project(db_conn, "proj-cron-ai-done", github_user="esp-crash-bot")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-done", "1.0")
+    helpers.create_crash(
+        db_conn, "proj-cron-ai-done", "1.0", device_id,
+        dump="already symbolicated", ai_summary="already summarized",
+    )
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+    assert calls == []
+
+
+def test_cron_ai_summary_failure_is_logged_and_skipped(client, db_conn, monkeypatch, app):
+    from app import decode
+    from app.routes import cron
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+
+    def failing_summarize(crash_id, project_name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cron, "summarize_and_tag", failing_summarize)
+    app.config["MCP_SERVICE_GITHUB_USER"] = "esp-crash-bot"
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-3")
+    helpers.create_project(db_conn, "proj-cron-ai-fail", github_user="esp-crash-bot")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-fail", "1.0")
+    crash_id = helpers.create_crash(db_conn, "proj-cron-ai-fail", "1.0", device_id, crash_dmp=b"raw-dump")
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+    assert resp.data == b"OK\n"
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] is None
+
+
 @pytest.mark.integration
 def test_cron_real_gdb_decode_path():
     """Requires the real xtensa ESP toolchain gdb (only present in the

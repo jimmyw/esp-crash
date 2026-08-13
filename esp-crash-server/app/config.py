@@ -49,3 +49,11 @@ def configure_app(app):
     app.config["EXTERNAL_URL"] = os.environ.get("EXTERNAL_URL", "")
     if not app.config["EXTERNAL_URL"]:
         app.logger.warning("EXTERNAL_URL not set - Slack URLs may not work properly")
+
+    # Cron-driven AI summarize+tag step (app/ai_tagging.py). All optional -
+    # if MCP_SERVICE_GITHUB_USER is unset, cron.py skips the step entirely
+    # (no project can match an empty ACL join).
+    app.config["ANTHROPIC_API_KEY"] = os.environ.get("ANTHROPIC_API_KEY", "")
+    app.config["MCP_PUBLIC_URL"] = os.environ.get("MCP_PUBLIC_URL", "")
+    app.config["MCP_SERVICE_TOKEN"] = os.environ.get("MCP_SERVICE_TOKEN", "")
+    app.config["MCP_SERVICE_GITHUB_USER"] = os.environ.get("MCP_SERVICE_GITHUB_USER", "")

@@ -60,6 +60,8 @@ def build_app():
         github_client_secret=github_client_secret,
         callback_url=f"{public_url}/github/callback",
         mcp_scope=MCP_SCOPE,
+        service_token=os.environ.get("MCP_SERVICE_TOKEN"),
+        service_github_user=os.environ.get("MCP_SERVICE_GITHUB_USER"),
     )
 
     mcp = FastMCP(

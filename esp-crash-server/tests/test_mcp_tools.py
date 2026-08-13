@@ -74,6 +74,7 @@ def test_get_crash_returns_dump_and_builds(app, db_conn, ctx):
     assert crash["ext_device_id"] == "dev-1"
     assert len(crash["builds"]) == 1
     assert crash["builds"][0]["project_alias"] == "build-x"
+    assert crash["ai_summary"] is None
     # dates serialized to ISO strings (JSON-friendly)
     assert isinstance(crash["date"], str)
 

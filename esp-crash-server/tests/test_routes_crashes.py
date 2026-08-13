@@ -38,6 +38,27 @@ def test_refresh_crash_clears_dump_and_redirects(client, db_conn):
         assert cur.fetchone()[0] is None
 
 
+def test_show_project_crash_renders_ai_summary(client, db_conn):
+    helpers.create_project(db_conn, "proj-c6", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c6")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-c6", "1.0", device_id,
+        dump="dump text", ai_summary="This crash is a stack overflow.",
+    )
+    resp = client.get(f"/projects/proj-c6/{crash_id}")
+    assert resp.status_code == 200
+    assert b"This crash is a stack overflow." in resp.data
+
+
+def test_show_project_crash_omits_ai_summary_block_when_absent(client, db_conn):
+    helpers.create_project(db_conn, "proj-c7", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c7")
+    crash_id = helpers.create_crash(db_conn, "proj-c7", "1.0", device_id, dump="dump text")
+    resp = client.get(f"/projects/proj-c7/{crash_id}")
+    assert resp.status_code == 200
+    assert b"bg-indigo-50" not in resp.data
+
+
 def test_delete_crash_removes_row_and_redirects(client, db_conn):
     helpers.create_project(db_conn, "proj-c5", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c5")
