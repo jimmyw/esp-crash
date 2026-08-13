@@ -55,9 +55,9 @@ def create_app():
 
     app.before_request(handle_chunking)
 
-    from .routes import core, projects, crashes, builds, devices, slack, ingest, cron
+    from .routes import core, projects, crashes, builds, devices, slack, ingest, cron, tags
 
-    for module in (core, projects, crashes, builds, devices, slack, ingest, cron):
+    for module in (core, projects, crashes, builds, devices, slack, ingest, cron, tags):
         module.register(app)
 
     return app

@@ -14,14 +14,35 @@ provide one.
 import datetime
 
 from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.models import Crash, Device, ElfFile, ProjectAuth, db
+from app.models import Crash, CrashTag, Device, ElfFile, ProjectAuth, Tag, db
+from app.tags import find_or_create_tag
 
 
 def _projects_of(github_user):
     """Subquery of project names the user is granted (for IN-scoping mutations
     and cross-table reads) - the ORM equivalent of auth_project_in_filter."""
     return select(ProjectAuth.project_name).where(ProjectAuth.github == github_user)
+
+
+def _tags_by_crash(crash_ids):
+    """Batched fetch of {crash_id: [tag dicts]} for the given crash_ids -
+    avoids one query per crash (same idiom as the `builds` attachment in
+    get_crash below)."""
+    if not crash_ids:
+        return {}
+    rows = db.session.execute(
+        select(CrashTag.crash_id, Tag.tag_id, Tag.name, Tag.description)
+        .join(Tag, CrashTag.tag_id == Tag.tag_id)
+        .where(CrashTag.crash_id.in_(crash_ids))
+    ).mappings().all()
+    out = {}
+    for r in rows:
+        out.setdefault(r["crash_id"], []).append(
+            {"tag_id": r["tag_id"], "name": r["name"], "description": r["description"]}
+        )
+    return out
 
 
 def _serialize(row):
@@ -54,14 +75,17 @@ def list_projects(github_user):
     return [_serialize(r) for r in rows]
 
 
-def list_crashes(github_user, project_name=None, search=None, limit=50, offset=0):
+def list_crashes(github_user, project_name=None, search=None, tag_id=None, limit=50, offset=0):
     """Crashes across the caller's projects, newest first. Optional project
-    filter and full-text search (matches the web crash list's textsearch)."""
+    filter, full-text search (matches the web crash list's textsearch), and
+    tag_id filter (see list_tags for a project's available tag_ids)."""
     conditions = [ProjectAuth.github == github_user]
     if project_name:
         conditions.append(Crash.project_name == project_name)
     if search:
         conditions.append(Crash.textsearch.op("@@")(func.plainto_tsquery(search)))
+    if tag_id:
+        conditions.append(Crash.crash_id.in_(select(CrashTag.crash_id).where(CrashTag.tag_id == tag_id)))
     rows = db.session.execute(
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
@@ -76,7 +100,11 @@ def list_crashes(github_user, project_name=None, search=None, limit=50, offset=0
         .limit(int(limit))
         .offset(int(offset))
     ).mappings().all()
-    return [_serialize(r) for r in rows]
+    tags_by_crash = _tags_by_crash([r["crash_id"] for r in rows])
+    results = [_serialize(r) for r in rows]
+    for r in results:
+        r["tags"] = tags_by_crash.get(r["crash_id"], [])
+    return results
 
 
 def get_crash(github_user, crash_id):
@@ -106,6 +134,7 @@ def get_crash(github_user, crash_id):
     ).mappings().all()
     result = _serialize(row)
     result["builds"] = [_serialize(b) for b in builds]
+    result["tags"] = _tags_by_crash([crash_id]).get(crash_id, [])
     return result
 
 
@@ -143,6 +172,18 @@ def get_build(github_user, build_id):
         .where(ElfFile.elf_file_id == build_id, ProjectAuth.github == github_user)
     ).mappings().first()
     return _serialize(row) if row is not None else None
+
+
+def list_tags(github_user, project_name):
+    """Tags defined for a project the caller can access, for picking an
+    existing one before calling add_tag_to_crash."""
+    rows = db.session.execute(
+        select(Tag.tag_id, Tag.name, Tag.description)
+        .join(ProjectAuth, Tag.project_name == ProjectAuth.project_name)
+        .where(Tag.project_name == project_name, ProjectAuth.github == github_user)
+        .order_by(Tag.name)
+    ).mappings().all()
+    return [_serialize(r) for r in rows]
 
 
 # ---- actions ---------------------------------------------------------------
@@ -193,3 +234,40 @@ def create_project(github_user, project_name):
     )
     db.session.commit()
     return {"created": True, "project_name": project_name}
+
+
+def add_tag_to_crash(github_user, crash_id, tag_name, tag_description=None):
+    """Attach a tag to a crash the caller can access, creating the tag for
+    that project if tag_name isn't already one of its tags (case-folded)."""
+    crash_project = db.session.execute(
+        select(Crash.project_name).where(
+            Crash.crash_id == crash_id, Crash.project_name.in_(_projects_of(github_user))
+        )
+    ).scalar_one_or_none()
+    if crash_project is None:
+        return {"crash_id": crash_id, "added": False, "reason": "not found or forbidden"}
+
+    tag_id = find_or_create_tag(crash_project, tag_name, tag_description)
+    db.session.execute(
+        pg_insert(CrashTag).values(crash_id=crash_id, tag_id=tag_id)
+        .on_conflict_do_nothing(index_elements=["crash_id", "tag_id"])
+    )
+    db.session.commit()
+    tag_row = db.session.execute(
+        select(Tag.tag_id, Tag.name, Tag.description).where(Tag.tag_id == tag_id)
+    ).mappings().first()
+    return {"crash_id": crash_id, "added": True, "tag": _serialize(tag_row)}
+
+
+def remove_tag_from_crash(github_user, crash_id, tag_id):
+    """Detach a tag from a crash the caller can access (the tag itself is
+    left intact for reuse). removed=False if not found/forbidden."""
+    res = db.session.execute(
+        delete(CrashTag).where(
+            CrashTag.crash_id == crash_id,
+            CrashTag.tag_id == tag_id,
+            CrashTag.crash_id.in_(select(Crash.crash_id).where(Crash.project_name.in_(_projects_of(github_user)))),
+        )
+    )
+    db.session.commit()
+    return {"crash_id": crash_id, "tag_id": tag_id, "removed": res.rowcount > 0}

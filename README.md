@@ -73,6 +73,15 @@ This will create a 64K coredump partition. If you have a lot of tasks, you need 
 
 Before you can see your uploaded crashes, you need to access https://esp-crash.wennlund.nu/ with your GitHub account, and register a new unique PROJECT_NAME. After you have registered it, you can add additional team members who can also examine the crashes.
 
+## Tags
+
+Crashes can be tagged (e.g. `reviewed`, `wontfix`, `duplicate`, or anything
+else) from the crash detail page. Pick an existing tag from the dropdown or
+type a new name to create it for that project - each tag can carry a
+description, shown on hover. Tags appear as badges in both the crash list
+and crash detail page; clicking one filters the crash list down to just that
+tag.
+
 ## MCP Server (AI tool access)
 
 Besides the web UI, your crash data is also reachable by AI tools (Claude,
@@ -82,7 +91,8 @@ the same GitHub login as the web app — you only see/modify the projects your
 GitHub account already has access to via `https://esp-crash.wennlund.nu/`.
 
 Available tools: `list_projects`, `list_crashes`, `get_crash`, `list_builds`,
-`get_build`, `refresh_crash`, `delete_crash`, `delete_build`, `create_project`.
+`get_build`, `list_tags`, `refresh_crash`, `delete_crash`, `delete_build`,
+`create_project`, `add_tag_to_crash`, `remove_tag_from_crash`.
 
 ### Adding it to Claude Code
 

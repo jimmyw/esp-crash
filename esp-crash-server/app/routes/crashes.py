@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select, update
 
 from .. import decode
 from ..auth import auth_filter, auth_project_in_filter, login_required
-from ..models import Crash, Device, ElfFile, ModuleElf, ProjectAuth, ProjectSettings, db
+from ..models import Crash, CrashTag, Device, ElfFile, ModuleElf, ProjectAuth, ProjectSettings, Tag, db
 from ..rendering import render_template
 
 
@@ -46,7 +46,7 @@ def show_project_crash(project_name, crash_id):
     if len(crash) != 1:
         return "Not found", 404
 
-    crash = crash[0]
+    crash = dict(crash[0])
 
     # Fetch all elf image data from database that matches this project and version
     elf_images = db.session.execute(
@@ -56,6 +56,20 @@ def show_project_crash(project_name, crash_id):
         )
         .where(ElfFile.project_name == crash["project_name"], ElfFile.project_ver == crash["project_ver"])
         .order_by(ElfFile.date.desc())
+    ).mappings().all()
+
+    crash["tags"] = db.session.execute(
+        select(Tag.tag_id, Tag.name, Tag.description)
+        .join(CrashTag, CrashTag.tag_id == Tag.tag_id)
+        .where(CrashTag.crash_id == crash_id)
+        .order_by(Tag.name)
+    ).mappings().all()
+
+    # Full project tag list, for the "pick an existing tag" datalist.
+    project_tags = db.session.execute(
+        select(Tag.name, Tag.description)
+        .where(Tag.project_name == crash["project_name"])
+        .order_by(Tag.name)
     ).mappings().all()
 
     # Module tags come from the persisted module_map (written at cron time).
@@ -75,7 +89,7 @@ def show_project_crash(project_name, crash_id):
             "available": bool(row),
         })
 
-    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"], modules = modules_for_ui)
+    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"], modules = modules_for_ui, project_tags = project_tags)
 
 
 @login_required

@@ -103,6 +103,8 @@ def _admin_conn(_pg):
 TABLES_TO_TRUNCATE = (
     "device",
     "crash",
+    "crash_tag",
+    "tag",
     "elf_file",
     "project_auth",
     "project_webhooks",
