@@ -77,6 +77,9 @@ COPY templates/ templates/
 # can run inside the container at deploy time.
 COPY alembic.ini .
 COPY alembic/ alembic/
+# MCP server (run via `uvicorn mcp_server:app`).
+COPY mcp_server.py .
+COPY mcp_app/ mcp_app/
 
 ENV FLASK_APP=server.py
 ENV FLASK_RUN_PORT=8000

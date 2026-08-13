@@ -73,6 +73,40 @@ This will create a 64K coredump partition. If you have a lot of tasks, you need 
 
 Before you can see your uploaded crashes, you need to access https://esp-crash.wennlund.nu/ with your GitHub account, and register a new unique PROJECT_NAME. After you have registered it, you can add additional team members who can also examine the crashes.
 
+## MCP Server (AI tool access)
+
+Besides the web UI, your crash data is also reachable by AI tools (Claude,
+other MCP-compatible clients) through an MCP server at
+`https://mcp-esp-crash.wennlund.nu/mcp`. It speaks Streamable HTTP and uses
+the same GitHub login as the web app — you only see/modify the projects your
+GitHub account already has access to via `https://esp-crash.wennlund.nu/`.
+
+Available tools: `list_projects`, `list_crashes`, `get_crash`, `list_builds`,
+`get_build`, `refresh_crash`, `delete_crash`, `delete_build`, `create_project`.
+
+### Adding it to Claude Code
+
+```bash
+claude mcp add --transport http esp-crash https://mcp-esp-crash.wennlund.nu/mcp
+claude mcp login esp-crash
+```
+
+The login command prints a GitHub authorization URL; open it, sign in, and
+approve. Run it in a real interactive terminal — completing the redirect
+needs a local browser/terminal round trip.
+
+### Adding it to other MCP clients
+
+Any client that supports Streamable HTTP + OAuth (e.g. Claude Desktop, MCP
+Inspector) just needs the server URL:
+
+```
+https://mcp-esp-crash.wennlund.nu/mcp
+```
+
+The client will discover the OAuth endpoints automatically and prompt you to
+log in with GitHub on first use.
+
 ## ESP-Crash Identifier
 
 Using
