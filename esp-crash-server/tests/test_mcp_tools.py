@@ -166,3 +166,121 @@ def test_create_project(app, db_conn, ctx):
 
 def test_create_project_requires_name(app, ctx):
     assert tools.create_project("alice", "")["created"] is False
+
+
+def test_list_tags_scoped(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    helpers.create_project(db_conn, "proj-b", github_user="bob")
+    helpers.create_tag(db_conn, "proj-a", "reviewed", description="Looked at")
+    helpers.create_tag(db_conn, "proj-b", "wontfix")
+
+    alice = tools.list_tags("alice", "proj-a")
+    assert [t["name"] for t in alice] == ["reviewed"]
+    assert alice[0]["description"] == "Looked at"
+    # can't see another user's project's tags
+    assert tools.list_tags("alice", "proj-b") == []
+
+
+def test_add_tag_to_crash_creates_and_reuses(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+
+    result = tools.add_tag_to_crash("alice", crash_id, "Reviewed", "Looked at")
+    assert result["added"] is True
+    assert result["tag"]["name"] == "reviewed"  # case-folded
+
+    # re-adding the same (case-insensitive) name reuses the tag_id, doesn't error
+    result2 = tools.add_tag_to_crash("alice", crash_id, "REVIEWED")
+    assert result2["tag"]["tag_id"] == result["tag"]["tag_id"]
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM crash_tag WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] == 1
+
+
+def test_add_tag_to_crash_denied_for_other_user(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+
+    result = tools.add_tag_to_crash("mallory", crash_id, "wontfix")
+    assert result["added"] is False
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM tag")
+        assert cur.fetchone()[0] == 0
+
+
+def test_tag_name_scoped_per_project(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    helpers.create_project(db_conn, "proj-b", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_a = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    crash_b = helpers.create_crash(db_conn, "proj-b", "1.0", dev)
+
+    tag_a = tools.add_tag_to_crash("alice", crash_a, "wontfix")["tag"]
+    tag_b = tools.add_tag_to_crash("alice", crash_b, "wontfix")["tag"]
+    assert tag_a["tag_id"] != tag_b["tag_id"]
+
+
+def test_remove_tag_from_crash(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    tag_id = tools.add_tag_to_crash("alice", crash_id, "wontfix")["tag"]["tag_id"]
+
+    # other user can't remove it
+    assert tools.remove_tag_from_crash("mallory", crash_id, tag_id)["removed"] is False
+
+    assert tools.remove_tag_from_crash("alice", crash_id, tag_id)["removed"] is True
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM crash_tag WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] == 0
+    # the tag itself is left intact for reuse
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM tag WHERE tag_id = %s", (tag_id,))
+        assert cur.fetchone()[0] == 1
+
+
+def test_list_crashes_tag_filter(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_1 = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    crash_2 = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    tag_id = helpers.create_tag(db_conn, "proj-a", "wontfix")
+    helpers.tag_crash(db_conn, crash_1, tag_id)
+
+    filtered = tools.list_crashes("alice", tag_id=tag_id)
+    assert [c["crash_id"] for c in filtered] == [crash_1]
+    assert filtered[0]["tags"][0]["name"] == "wontfix"
+
+    unfiltered = tools.list_crashes("alice")
+    assert {c["crash_id"] for c in unfiltered} == {crash_1, crash_2}
+
+
+def test_get_crash_includes_tags(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    tag_id = helpers.create_tag(db_conn, "proj-a", "reviewed", description="Looked at")
+    helpers.tag_crash(db_conn, crash_id, tag_id)
+
+    crash = tools.get_crash("alice", crash_id)
+    assert crash["tags"] == [{"tag_id": tag_id, "name": "reviewed", "description": "Looked at"}]
+
+
+def test_delete_crash_cascades_crash_tag(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    tag_id = helpers.create_tag(db_conn, "proj-a", "wontfix")
+    helpers.tag_crash(db_conn, crash_id, tag_id)
+
+    assert tools.delete_crash("alice", crash_id)["deleted"] == 1
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM crash_tag WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] == 0
+    # the tag row itself survives (orphaned tags are kept for reuse)
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM tag WHERE tag_id = %s", (tag_id,))
+        assert cur.fetchone()[0] == 1

@@ -8,6 +8,7 @@ endblock %}
 
     </h1>
     <form action="{{ url_for(request.endpoint, project_name=project_name) }}" method="GET" class="flex items-center">
+        {% if tag_id %}<input type="hidden" name="tag_id" value="{{tag_id}}">{% endif %}
         <input type="text" name="search" value="{{search}}" placeholder="Search for crashes"
             class="p-2 border-2 border-gray-300 rounded-md">
         <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">Search</button>
@@ -33,6 +34,13 @@ endblock %}
 
 </div>
 
+{% if active_tag %}
+<div class="w-5/6 mb-2 text-sm text-gray-600">
+    Filtered by tag: <b>{{ active_tag }}</b> &middot;
+    <a href="{{ url_for(request.endpoint, project_name=project_name, search=search, limit=limit) }}" class="text-blue-600 hover:underline">clear</a>
+</div>
+{% endif %}
+
 <div class="w-5/6 relative overflow-x-auto shadow-md sm:rounded-lg">
     <table class="w-full text-sm text-left text-gray-500">
         <thead class="text-xs text-gray-700 uppercase bg-gray-50">
@@ -44,6 +52,7 @@ endblock %}
                 <th scope="col" class="px-6 py-3">Project Version</th>
                 <th scope="col" class="px-6 py-3">Device Id</th>
                 <th scope="col" class="px-6 py-3">Modules</th>
+                <th scope="col" class="px-6 py-3">Tags</th>
                 <th scope="col" class="px-6 py-3"></th>
             </tr>
         </thead>
@@ -95,6 +104,21 @@ endblock %}
                     {% endif %}
                 </td>
                 <td class="px-6 py-4">
+                    {% if crash.tags %}
+                    <div class="flex flex-wrap gap-1">
+                        {% for t in crash.tags %}
+                        <a href="{{ url_for(request.endpoint, project_name=project_name, tag_id=t.tag_id, search=search, limit=limit) }}"
+                           class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 hover:bg-amber-200"
+                           title="{{ t.description or '' }}">
+                            {{ t.name }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <span class="text-gray-300">&mdash;</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
                     <a href="{{ url_for('delete_crash', project_name=crash.project_name, crash_id=crash.crash_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
                     <a href="{{ url_for('show_device', device_id=crash.device_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>
                     {% if crash.elf_file_id %}
@@ -112,13 +136,13 @@ endblock %}
     <div class="w-full text-sm text-left text-gray-500 text-center" style="margin: 50px 0px;">
         <h2>
             {% if offset > 0 %}
-            <a href="{{ url_for(request.endpoint, project_name=project_name, search=search, limit=limit, offset=offset - limit) }}" class="p-2 bg-blue-500 text-white rounded-md">
+            <a href="{{ url_for(request.endpoint, project_name=project_name, search=search, limit=limit, offset=offset - limit, tag_id=tag_id) }}" class="p-2 bg-blue-500 text-white rounded-md">
                 Previous
             </a>
             {% endif %}
             &nbsp; Page {{ (offset // limit) + 1 }} of {{ (full_count // limit) + (1 if full_count % limit > 0 else 0) }} &nbsp;
             {% if offset + limit < full_count %}
-            <a href="{{ url_for(request.endpoint, project_name=project_name, search=search, limit=limit, offset=offset + limit) }}" class="p-2 bg-blue-500 text-white rounded-md">
+            <a href="{{ url_for(request.endpoint, project_name=project_name, search=search, limit=limit, offset=offset + limit, tag_id=tag_id) }}" class="p-2 bg-blue-500 text-white rounded-md">
                 Next
             </a>
             {% endif %}

@@ -1,11 +1,9 @@
 """SQLAlchemy ORM models + the Flask-SQLAlchemy `db` handle.
 
-One model per table, mirroring the hand-written schema (db_schema.sql +
-slack_migration.sql + project_settings_migration.sql) *exactly* - this phase
-introduces no schema change, so the models must match the live production DB
-column-for-column, index-for-index. The `update_textsearch` trigger/function on
-`crash` is NOT modelled here (SQLAlchemy doesn't manage triggers); it lives in
-the Alembic migration and stays in the database.
+One model per table, matching the schema managed by the Alembic migrations in
+`alembic/versions/` column-for-column, index-for-index. The `update_textsearch`
+trigger/function on `crash` is NOT modelled here (SQLAlchemy doesn't manage
+triggers); it lives in the Alembic migration and stays in the database.
 """
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
@@ -106,6 +104,33 @@ class ProjectSettings(db.Model):
 
     project_name = db.Column(db.Text, primary_key=True)
     device_url_template = db.Column(db.Text)
+
+
+class Tag(db.Model):
+    __tablename__ = "tag"
+    __table_args__ = (
+        db.UniqueConstraint("project_name", "name", name="uq_tag_project_name_name"),
+        db.Index("idx_tag_project_name", "project_name"),
+    )
+
+    tag_id = db.Column(db.Integer, primary_key=True)
+    project_name = db.Column(db.Text, nullable=False)
+    name = db.Column(db.Text, nullable=False)
+    description = db.Column(db.Text)
+
+
+class CrashTag(db.Model):
+    __tablename__ = "crash_tag"
+    __table_args__ = (
+        db.Index("idx_crash_tag_tag_id", "tag_id"),
+    )
+
+    crash_id = db.Column(
+        db.Integer, db.ForeignKey("crash.crash_id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id = db.Column(
+        db.Integer, db.ForeignKey("tag.tag_id", ondelete="CASCADE"), primary_key=True
+    )
 
 
 class ModuleElf(db.Model):

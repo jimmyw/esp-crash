@@ -55,6 +55,23 @@ def create_module_elf(db_conn, name, app_sha1, elf_bytes=b"raw-module-elf-bytes"
         return cur.fetchone()[0]
 
 
+def create_tag(db_conn, project_name, name, description=None):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO tag (project_name, name, description) VALUES (%s, %s, %s) RETURNING tag_id",
+            (project_name, name, description),
+        )
+        return cur.fetchone()[0]
+
+
+def tag_crash(db_conn, crash_id, tag_id):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO crash_tag (crash_id, tag_id) VALUES (%s, %s)",
+            (crash_id, tag_id),
+        )
+
+
 def create_webhook(db_conn, project_name, webhook_url):
     with db_conn.cursor() as cur:
         cur.execute(

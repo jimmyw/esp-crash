@@ -101,13 +101,15 @@ def build_app():
     def list_crashes(
         project_name: str | None = None,
         search: str | None = None,
+        tag_id: int | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
         """List crashes across your projects (newest first). Optionally filter
-        by project_name and/or a full-text search string."""
+        by project_name, a full-text search string, and/or tag_id (see
+        list_tags for a project's available tag_ids)."""
         with flask_app.app_context():
-            return tools.list_crashes(_current_user(), project_name, search, limit, offset)
+            return tools.list_crashes(_current_user(), project_name, search, tag_id, limit, offset)
 
     @mcp.tool()
     def get_crash(crash_id: int) -> dict | None:
@@ -128,6 +130,14 @@ def build_app():
         """Get detail for one uploaded ELF build. Null if not found/accessible."""
         with flask_app.app_context():
             return tools.get_build(_current_user(), build_id)
+
+    @mcp.tool()
+    def list_tags(project_name: str) -> list[dict]:
+        """List the tags defined for one of your projects (e.g. reviewed,
+        wontfix, duplicate), for picking an existing one before calling
+        add_tag_to_crash."""
+        with flask_app.app_context():
+            return tools.list_tags(_current_user(), project_name)
 
     # ---- action tools -----------------------------------------------------
 
@@ -154,6 +164,20 @@ def build_app():
         """Create a new project owned by your GitHub account."""
         with flask_app.app_context():
             return tools.create_project(_current_user(), project_name)
+
+    @mcp.tool()
+    def add_tag_to_crash(crash_id: int, tag_name: str, tag_description: str | None = None) -> dict:
+        """Attach a tag to a crash. Creates the tag for that crash's project
+        if tag_name isn't already one of its tags (names are case-folded);
+        tag_description is only used when creating a new tag."""
+        with flask_app.app_context():
+            return tools.add_tag_to_crash(_current_user(), crash_id, tag_name, tag_description)
+
+    @mcp.tool()
+    def remove_tag_from_crash(crash_id: int, tag_id: int) -> dict:
+        """Detach a tag from a crash (the tag itself is left intact for reuse)."""
+        with flask_app.app_context():
+            return tools.remove_tag_from_crash(_current_user(), crash_id, tag_id)
 
     # ---- upstream GitHub OAuth callback -----------------------------------
 

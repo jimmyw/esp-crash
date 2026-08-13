@@ -11,8 +11,8 @@ from device_url import DEVICE_ID_PLACEHOLDER, device_url_template_is_valid
 
 from ..auth import auth_filter, login_required
 from ..models import (
-    Crash, Device, ElfFile, ProjectAuth, ProjectSettings,
-    ProjectSlackIntegration, ProjectWebhook, db,
+    Crash, CrashTag, Device, ElfFile, ProjectAuth, ProjectSettings,
+    ProjectSlackIntegration, ProjectWebhook, Tag, db,
 )
 from ..rendering import render_template
 
@@ -23,12 +23,16 @@ def list_project_crashes(project_name):
     search = request.args.get('search', None)
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
+    tag_id = request.args.get('tag_id', None)
+    tag_id = int(tag_id) if tag_id else None
 
     conditions = [auth_filter(ProjectAuth.github)]
     if project_name:
         conditions.append(Crash.project_name == project_name)
     if search and len(search) > 0:
         conditions.append(Crash.textsearch.op("@@")(func.plainto_tsquery(search)))
+    if tag_id:
+        conditions.append(Crash.crash_id.in_(select(CrashTag.crash_id).where(CrashTag.tag_id == tag_id)))
 
     crashes = db.session.execute(
         select(
@@ -66,9 +70,32 @@ def list_project_crashes(project_name):
         .offset(offset)
     ).mappings().all()
 
+    # Tags aren't folded into the aggregate query above (it already juggles
+    # an array_agg + a count() window) - fetch them in one batched query and
+    # attach in Python, the same idiom used for builds in mcp_app/tools.py.
+    crash_ids = [c["crash_id"] for c in crashes]
+    tags_by_crash = {}
+    if crash_ids:
+        tag_rows = db.session.execute(
+            select(CrashTag.crash_id, Tag.tag_id, Tag.name, Tag.description)
+            .join(Tag, CrashTag.tag_id == Tag.tag_id)
+            .where(CrashTag.crash_id.in_(crash_ids))
+        ).mappings().all()
+        for t in tag_rows:
+            tags_by_crash.setdefault(t["crash_id"], []).append(
+                {"tag_id": t["tag_id"], "name": t["name"], "description": t["description"]}
+            )
+    crashes = [dict(c, tags=tags_by_crash.get(c["crash_id"], [])) for c in crashes]
+
+    active_tag = None
+    if tag_id:
+        active_tag = db.session.execute(
+            select(Tag.name).where(Tag.tag_id == tag_id)
+        ).scalar_one_or_none()
+
     # crash.module_names is populated at cron processing time, so no per-row
     # coredump parsing happens here.
-    return render_template('project.html', crashes = crashes, project_name = project_name, search = search or "", limit = limit, offset = offset, full_count = crashes[0]["full_count"] if len(crashes) > 0 else 0)
+    return render_template('project.html', crashes = crashes, project_name = project_name, search = search or "", limit = limit, offset = offset, tag_id = tag_id, active_tag = active_tag, full_count = crashes[0]["full_count"] if len(crashes) > 0 else 0)
 
 
 @login_required
