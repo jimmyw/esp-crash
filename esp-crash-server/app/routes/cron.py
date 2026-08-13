@@ -265,9 +265,23 @@ def cron():
 
     # AI summary + tagging: a second, independent pass with its own retry
     # gate (ai_summary IS NULL), scoped to projects that have explicitly
-    # granted the service identity ACL access - see app/ai_tagging.py.
+    # granted the service identity ACL access - see app/ai_tagging.py. Gate
+    # on every required config value, not just MCP_SERVICE_GITHUB_USER - a
+    # partially-configured deployment would otherwise retry a doomed API
+    # call every tick instead of a clean, informative no-op.
     service_user = current_app.config.get("MCP_SERVICE_GITHUB_USER")
-    if service_user:
+    ai_configured = bool(
+        service_user
+        and current_app.config.get("ANTHROPIC_API_KEY")
+        and current_app.config.get("MCP_PUBLIC_URL")
+        and current_app.config.get("MCP_SERVICE_TOKEN")
+    )
+    if service_user and not ai_configured:
+        current_app.logger.warning(
+            "MCP_SERVICE_GITHUB_USER is set but one of ANTHROPIC_API_KEY / "
+            "MCP_PUBLIC_URL / MCP_SERVICE_TOKEN is not - skipping AI summarize/tag step"
+        )
+    if ai_configured:
         ai_crashes = db.session.execute(
             select(Crash.crash_id, Crash.project_name)
             .join(ProjectAuth, (Crash.project_name == ProjectAuth.project_name)

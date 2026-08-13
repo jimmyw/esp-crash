@@ -51,8 +51,9 @@ def configure_app(app):
         app.logger.warning("EXTERNAL_URL not set - Slack URLs may not work properly")
 
     # Cron-driven AI summarize+tag step (app/ai_tagging.py). All optional -
-    # if MCP_SERVICE_GITHUB_USER is unset, cron.py skips the step entirely
-    # (no project can match an empty ACL join).
+    # cron.py requires every one of these to be set before attempting the
+    # step; a missing/empty value cleanly skips it rather than retrying a
+    # doomed API call every tick.
     app.config["ANTHROPIC_API_KEY"] = os.environ.get("ANTHROPIC_API_KEY", "")
     app.config["MCP_PUBLIC_URL"] = os.environ.get("MCP_PUBLIC_URL", "")
     app.config["MCP_SERVICE_TOKEN"] = os.environ.get("MCP_SERVICE_TOKEN", "")
