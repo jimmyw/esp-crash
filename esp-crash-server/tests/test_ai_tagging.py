@@ -60,7 +60,7 @@ def test_summarize_and_tag_writes_summary_and_calls_mcp_connector(app, db_conn, 
     assert result == summary_text
     assert len(calls) == 1
     kwargs = calls[0]
-    assert kwargs["model"] == "claude-sonnet-5"
+    assert kwargs["model"] == "claude-haiku-4-5"
     assert kwargs["betas"] == ["mcp-client-2025-11-20"]
     assert kwargs["mcp_servers"][0]["url"] == "https://mcp-esp-crash.example/mcp"
     assert kwargs["mcp_servers"][0]["authorization_token"] == "svc-token"

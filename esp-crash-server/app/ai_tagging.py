@@ -14,7 +14,12 @@ from sqlalchemy import update
 from .models import Crash, db
 
 MCP_BETA = "mcp-client-2025-11-20"
-MODEL = "claude-sonnet-5"
+# Haiku 4.5 over Sonnet 5: this runs on every new crash, and in practice
+# most crashes within a project cluster around a handful of recurring root
+# causes (e.g. a firmware rollout tripping the same watchdog across many
+# devices at once) - reusing an existing tag is the common case, which
+# Haiku handles fine. Revisit if summary/tagging quality regresses.
+MODEL = "claude-haiku-4-5"
 
 
 def summarize_and_tag(crash_id, project_name):
