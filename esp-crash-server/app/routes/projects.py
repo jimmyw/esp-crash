@@ -45,6 +45,7 @@ def list_project_crashes(project_name):
             Crash.device_id,
             Crash.project_ver,
             Crash.module_names,
+            Crash.signature,
             func.array_agg(ElfFile.elf_file_id).filter(ElfFile.elf_file_id.isnot(None)).label("elf_file_id"),
             func.array_agg(ElfFile.project_alias).label("project_alias"),
             Device.ext_device_id,
@@ -64,6 +65,7 @@ def list_project_crashes(project_name):
             Crash.project_name,
             Crash.device_id,
             Crash.project_ver,
+            Crash.signature,
             Device.ext_device_id,
             Device.alias,
             ProjectSettings.device_url_template,
@@ -89,7 +91,33 @@ def list_project_crashes(project_name):
             tags_by_crash.setdefault(t["crash_id"], []).append(
                 {"tag_id": t["tag_id"], "name": t["name"], "description": t["description"]}
             )
-    crashes = [dict(c, tags=tags_by_crash.get(c["crash_id"], [])) for c in crashes]
+    # Related-crash counts (non-AI, see app/crash_signature.py) - batched the
+    # same way as tags above rather than folded into the aggregate query.
+    # count(distinct crash_id) because the ProjectAuth join above can fan
+    # out per crash when a project has more than one ACL row (or in
+    # no-auth mode, where every ProjectAuth row for a project matches) -
+    # a plain count() would overcount in exactly those cases.
+    signatures = {c["signature"] for c in crashes if c["signature"]}
+    related_counts = {}
+    if signatures:
+        related_rows = db.session.execute(
+            select(Crash.signature, func.count(func.distinct(Crash.crash_id)).label("cnt"))
+            .select_from(Crash)
+            .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+            .where(Crash.signature.in_(signatures), auth_filter(ProjectAuth.github))
+            .group_by(Crash.signature)
+        ).mappings().all()
+        related_counts = {r["signature"]: r["cnt"] for r in related_rows}
+
+    crashes = [
+        dict(
+            c,
+            tags=tags_by_crash.get(c["crash_id"], []),
+            # -1 to exclude the crash itself from its own related count.
+            related_count=max(0, related_counts.get(c["signature"], 0) - 1) if c["signature"] else 0,
+        )
+        for c in crashes
+    ]
 
     active_tag = None
     if tag_id:
