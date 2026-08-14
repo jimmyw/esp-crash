@@ -61,6 +61,7 @@ endblock %}
                 <th scope="col" class="px-6 py-3">Device Id</th>
                 <th scope="col" class="px-6 py-3">Modules</th>
                 <th scope="col" class="px-6 py-3">Tags</th>
+                <th scope="col" class="px-6 py-3">Related</th>
                 <th scope="col" class="px-6 py-3"></th>
             </tr>
         </thead>
@@ -122,6 +123,17 @@ endblock %}
                         </a>
                         {% endfor %}
                     </div>
+                    {% else %}
+                    <span class="text-gray-300">&mdash;</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    {% if crash.related_count > 0 %}
+                    <a href="{{ url_for('list_crashes', signature=crash.signature) }}"
+                       class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 hover:bg-sky-200"
+                       title="Other crashes with the same stack signature (no AI involved)">
+                        Related({{ crash.related_count }})
+                    </a>
                     {% else %}
                     <span class="text-gray-300">&mdash;</span>
                     {% endif %}

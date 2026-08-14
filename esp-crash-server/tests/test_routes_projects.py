@@ -86,6 +86,51 @@ def test_list_crashes_signature_filter_spans_projects(client, db_conn):
     assert "proj-sig-b" in body
 
 
+def test_list_project_crashes_shows_related_link_with_count(client, db_conn):
+    helpers.create_project(db_conn, "proj-related", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-related")
+    sig = "e" * 64
+    helpers.create_crash(db_conn, "proj-related", "1.0", device_id, signature=sig)
+    helpers.create_crash(db_conn, "proj-related", "1.0", device_id, signature=sig)
+    helpers.create_crash(db_conn, "proj-related", "1.0", device_id, signature=sig)
+
+    resp = client.get("/projects/proj-related")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # Each of the 3 crashes shares its signature with the other 2.
+    assert body.count("Related(2)") == 3
+    assert f"signature={sig}" in body
+
+
+def test_list_project_crashes_hides_related_link_without_duplicates(client, db_conn):
+    helpers.create_project(db_conn, "proj-no-related", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-no-related")
+    # A signature with no other crash sharing it, and a crash with no
+    # signature at all - neither should render a Related link.
+    helpers.create_crash(db_conn, "proj-no-related", "1.0", device_id, signature="f" * 64)
+    helpers.create_crash(db_conn, "proj-no-related", "1.0", device_id)
+
+    resp = client.get("/projects/proj-no-related")
+    assert resp.status_code == 200
+    assert "Related(" not in resp.data.decode()
+
+
+def test_related_count_not_inflated_by_multiple_acl_grants(client, db_conn):
+    """A project with more than one project_auth row (multiple users
+    granted access) must not fan-out the related-crash count - regression
+    test for the ProjectAuth join used to compute it."""
+    helpers.create_project(db_conn, "proj-related-multi-acl", github_user="alice")
+    helpers.create_project(db_conn, "proj-related-multi-acl", github_user="bob")
+    device_id = helpers.create_device(db_conn, "dev-related-multi-acl")
+    sig = "1" * 64
+    helpers.create_crash(db_conn, "proj-related-multi-acl", "1.0", device_id, signature=sig)
+    helpers.create_crash(db_conn, "proj-related-multi-acl", "1.0", device_id, signature=sig)
+
+    resp = client.get("/projects/proj-related-multi-acl")
+    assert resp.status_code == 200
+    assert "Related(1)" in resp.data.decode()
+
+
 def test_list_builds_empty(client, db_conn):
     helpers.create_project(db_conn, "proj-b", github_user="none")
     resp = client.get("/projects/proj-b/builds")
