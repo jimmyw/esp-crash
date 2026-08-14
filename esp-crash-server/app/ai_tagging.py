@@ -122,19 +122,31 @@ def summarize_and_tag(crash_id, project_name):
             "content": (
                 f"Crash {crash_id} in project '{project_name}' was just symbolicated. "
                 "Use the esp-crash MCP tools: call get_crash to read its details, and "
-                "list_tags to see this project's existing tags. Write a short (2-3 "
-                "sentence) plain-English summary of what the crash is and its likely "
-                "cause. Then call add_tag_to_crash once per tag that fits - reuse an "
-                "existing tag whenever one applies, and only create a new tag when "
-                "nothing existing fits. Do not remove any existing tags. Respond with "
-                "only the summary text, nothing else."
+                "list_tags to see this project's existing tags. Then call add_tag_to_crash "
+                "once per tag that fits - reuse an existing tag whenever one applies, and "
+                "only create a new tag when nothing existing fits. Do not remove any "
+                "existing tags. Do not narrate your steps or explain what you're about to "
+                "do before or between tool calls - make all the tool calls first, then send "
+                "one final message containing nothing but a short (2-3 sentence) "
+                "plain-English summary of what the crash is and its likely cause. That "
+                "final message is shown as-is to a human reading the crash report, so it "
+                "must not include any preamble, tool narration, or markdown."
             ),
         }],
     )
 
-    summary = "".join(
-        block.text for block in response.content if block.type == "text"
-    ).strip()
+    # response.content is the full flattened transcript of the server-side
+    # tool-use turns (text, tool_use, tool_result, text, tool_use, ...,
+    # text) - only the trailing run of text blocks is the final answer;
+    # earlier text blocks are narration Claude produced between tool calls
+    # ("I'll start by...", "Now I'll tag this...") and must not end up in
+    # the stored summary.
+    summary_blocks = []
+    for block in reversed(response.content):
+        if block.type != "text":
+            break
+        summary_blocks.append(block.text)
+    summary = "\n\n".join(reversed(summary_blocks)).strip()
 
     db.session.execute(
         update(Crash).where(Crash.crash_id == crash_id).values(ai_summary=summary)
