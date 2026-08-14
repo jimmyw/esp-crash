@@ -111,6 +111,9 @@ TABLES_TO_TRUNCATE = (
     "project_slack_integrations",
     "project_settings",
     "module_elf",
+    "mcp_oauth_client",
+    "mcp_access_token",
+    "mcp_refresh_token",
 )
 
 

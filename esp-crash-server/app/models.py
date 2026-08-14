@@ -134,6 +134,44 @@ class CrashTag(db.Model):
     )
 
 
+class McpOAuthClient(db.Model):
+    """Dynamically-registered MCP OAuth clients (RFC 7591). `data` is the
+    full serialized mcp.shared.auth.OAuthClientInformationFull - stored as a
+    blob rather than column-per-field so the store tracks the SDK's model
+    without a migration every time it gains a field."""
+    __tablename__ = "mcp_oauth_client"
+
+    client_id = db.Column(db.Text, primary_key=True)
+    data = db.Column(JSONB, nullable=False)
+    created_at = db.Column(db.TIMESTAMP, server_default=db.func.now())
+
+
+class McpAccessToken(db.Model):
+    """Issued MCP bearer access tokens. expires_at is duplicated out of
+    `data` (a serialized mcp.server.auth.provider.AccessToken) as a plain
+    column purely so expiry can be checked/cleaned up in SQL."""
+    __tablename__ = "mcp_access_token"
+    __table_args__ = (
+        db.Index("idx_mcp_access_token_expires_at", "expires_at"),
+    )
+
+    token = db.Column(db.Text, primary_key=True)
+    client_id = db.Column(db.Text, nullable=False)
+    expires_at = db.Column(db.BigInteger)
+    data = db.Column(JSONB, nullable=False)
+    created_at = db.Column(db.TIMESTAMP, server_default=db.func.now())
+
+
+class McpRefreshToken(db.Model):
+    """Issued MCP refresh tokens (serialized mcp.server.auth.provider.RefreshToken)."""
+    __tablename__ = "mcp_refresh_token"
+
+    token = db.Column(db.Text, primary_key=True)
+    client_id = db.Column(db.Text, nullable=False)
+    data = db.Column(JSONB, nullable=False)
+    created_at = db.Column(db.TIMESTAMP, server_default=db.func.now())
+
+
 class ModuleElf(db.Model):
     __tablename__ = "module_elf"
     __table_args__ = (

@@ -56,6 +56,7 @@ def build_app():
     flask_app = _make_db_app()
 
     provider = GitHubOAuthProvider(
+        flask_app=flask_app,
         github_client_id=github_client_id,
         github_client_secret=github_client_secret,
         callback_url=f"{public_url}/github/callback",
