@@ -8,11 +8,11 @@ import bz2
 import psycopg2
 
 
-def create_project(db_conn, project_name, github_user="none"):
+def create_project(db_conn, project_name, github_user="none", date=None):
     with db_conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO project_auth (date, project_name, github) VALUES (NOW(), %s, %s)",
-            (project_name, github_user),
+            "INSERT INTO project_auth (date, project_name, github) VALUES (COALESCE(%s, NOW()), %s, %s)",
+            (date, project_name, github_user),
         )
 
 
@@ -25,12 +25,12 @@ def create_device(db_conn, ext_device_id, alias=None):
         return cur.fetchone()[0]
 
 
-def create_crash(db_conn, project_name, project_ver, device_id, crash_dmp=b"raw-dump-bytes", dump=None, ai_summary=None):
+def create_crash(db_conn, project_name, project_ver, device_id, crash_dmp=b"raw-dump-bytes", dump=None, ai_summary=None, date=None):
     with db_conn.cursor() as cur:
         cur.execute(
             """INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id, dump, ai_summary)
-               VALUES (NOW(), %s, %s, %s, %s, %s, %s) RETURNING crash_id""",
-            (project_name, project_ver, psycopg2.Binary(crash_dmp), device_id, dump, ai_summary),
+               VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s) RETURNING crash_id""",
+            (date, project_name, project_ver, psycopg2.Binary(crash_dmp), device_id, dump, ai_summary),
         )
         return cur.fetchone()[0]
 

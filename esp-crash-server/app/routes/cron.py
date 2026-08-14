@@ -36,11 +36,9 @@ def cron():
         .order_by(Crash.crash_id.desc())
         .limit(10)
     ).mappings().all()
-    # If no crash data is found, return "Not found"
-    if len(crashes) < 1:
-        return "Nothing to do\n", 200
-
-    current_app.logger.info("Processing {} crashes".format(len(crashes)))
+    if crashes:
+        current_app.logger.info("Processing {} crashes".format(len(crashes)))
+    processed_anything = bool(crashes)
     for crash in crashes:
         current_app.logger.info("Processing crash {} project_name '{}' date '{}'".format(crash["crash_id"], crash["project_name"], crash["date"]))
 
@@ -269,6 +267,12 @@ def cron():
     # on every required config value, not just MCP_SERVICE_GITHUB_USER - a
     # partially-configured deployment would otherwise retry a doomed API
     # call every tick instead of a clean, informative no-op.
+    #
+    # Crash.date > ProjectAuth.date (the grant's own timestamp - already
+    # recorded by create_acl, no new column needed) scopes this to crashes
+    # that happened *after* the bot was granted access, not the project's
+    # entire history - granting access on a project with years of crashes
+    # must not trigger a backfill of all of them.
     service_user = current_app.config.get("MCP_SERVICE_GITHUB_USER")
     ai_configured = bool(
         service_user
@@ -286,9 +290,10 @@ def cron():
             select(Crash.crash_id, Crash.project_name)
             .join(ProjectAuth, (Crash.project_name == ProjectAuth.project_name)
                                 & (ProjectAuth.github == service_user))
-            .where(Crash.dump.is_not(None), Crash.ai_summary.is_(None))
+            .where(Crash.dump.is_not(None), Crash.ai_summary.is_(None), Crash.date > ProjectAuth.date)
             .limit(10)
         ).mappings().all()
+        processed_anything = processed_anything or bool(ai_crashes)
         for crash in ai_crashes:
             try:
                 summarize_and_tag(crash["crash_id"], crash["project_name"])
@@ -296,7 +301,8 @@ def cron():
             except Exception as e:
                 current_app.logger.error(f"AI summarize/tag failed for crash {crash['crash_id']}: {e}")
 
-    # return just a 200 OK
+    if not processed_anything:
+        return "Nothing to do\n", 200
     return "OK\n", 200
 
 
