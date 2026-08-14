@@ -3,10 +3,10 @@
 {% block content %}
 
 <div class="flex">
-    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-3/6">
+    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-2/6">
         Crash report <b>{{ crash.project_name }}</b> <b>#{{ crash.crash_id }}</b>
     </h1>
-    <div class="w-2/6 flex flex-wrap justify-end items-center">
+    <div class="w-4/6 flex flex-wrap justify-end items-center">
     <a href="{{ url_for('show_device', device_id=crash.device_id) }}" class="flex items-center p-4 ">
         <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <rect x="5" y="3" width="14" height="18" rx="2" ry="2"></rect>
@@ -83,7 +83,7 @@
 </div>
 
 {% if crash.ai_summary %}
-<div class="w-5/6 mt-4 p-4 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-slate-700 italic">
+<div class="w-5/6 mt-4 p-4 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-slate-700 italic whitespace-pre-line">
     {{ crash.ai_summary }}
 </div>
 {% endif %}

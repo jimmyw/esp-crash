@@ -73,6 +73,23 @@ def test_show_project_crash_renders_ai_summary(client, db_conn):
     assert b"This crash is a stack overflow." in resp.data
 
 
+def test_show_project_crash_ai_summary_preserves_newlines(client, db_conn):
+    """The AI summary is prose Claude wrote with its own line breaks -
+    plain HTML collapses those, so the summary block needs a whitespace
+    CSS class that actually renders them."""
+    helpers.create_project(db_conn, "proj-c7-ai-nl", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c7-ai-nl")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-c7-ai-nl", "1.0", device_id,
+        dump="dump text", ai_summary="First line.\nSecond line.",
+    )
+    resp = client.get(f"/projects/proj-c7-ai-nl/{crash_id}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "First line.\nSecond line." in body
+    assert "whitespace-pre-line" in body
+
+
 def test_show_project_crash_omits_ai_summary_block_when_absent(client, db_conn):
     helpers.create_project(db_conn, "proj-c7", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c7")
