@@ -38,6 +38,29 @@ def test_refresh_crash_clears_dump_and_redirects(client, db_conn):
         assert cur.fetchone()[0] is None
 
 
+def test_show_project_crash_shows_related_link_when_signature_set(client, db_conn):
+    helpers.create_project(db_conn, "proj-c7", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c7")
+    sig = "d" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-c7", "1.0", device_id, dump="dump text", signature=sig)
+
+    resp = client.get(f"/projects/proj-c7/{crash_id}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert f"/crash?signature={sig}" in body
+    assert "Related" in body
+
+
+def test_show_project_crash_hides_related_link_without_signature(client, db_conn):
+    helpers.create_project(db_conn, "proj-c8", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c8")
+    crash_id = helpers.create_crash(db_conn, "proj-c8", "1.0", device_id, dump="dump text")
+
+    resp = client.get(f"/projects/proj-c8/{crash_id}")
+    assert resp.status_code == 200
+    assert b"signature=" not in resp.data
+
+
 def test_show_project_crash_renders_ai_summary(client, db_conn):
     helpers.create_project(db_conn, "proj-c6", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c6")

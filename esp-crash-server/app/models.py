@@ -24,6 +24,7 @@ class Crash(db.Model):
     __table_args__ = (
         db.Index("textsearch_idx", "textsearch", postgresql_using="gin"),
         db.Index("idx_crash_project_name_ver", "project_name", "project_ver"),
+        db.Index("idx_crash_signature", "signature"),
     )
 
     crash_id = db.Column(db.Integer, primary_key=True)
@@ -39,6 +40,10 @@ class Crash(db.Model):
     module_names = db.Column(ARRAY(db.Text))
     module_map = db.Column(JSONB)
     ai_summary = db.Column(db.Text)
+    # Non-AI duplicate-grouping fingerprint - see app/crash_signature.py.
+    # NULL for crashes not yet backfilled or whose dump has no parseable
+    # GDB backtrace.
+    signature = db.Column(db.Text)
 
 
 class ElfFile(db.Model):

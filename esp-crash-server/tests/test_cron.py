@@ -45,6 +45,76 @@ def test_cron_processes_pending_crash(client, db_conn, monkeypatch):
         assert "base panic text" in cur.fetchone()[0]
 
 
+_STACK_TEXT = (
+    "==================== CURRENT THREAD STACK =====================\n"
+    "#0  panic_abort (details=0x3ffb37ac) at panic.c:489\n"
+    "#1  0x4008874c in esp_system_abort (details=0x3ffb37ac) at esp_system_chip.c:87\n"
+    "#2  0x40114e3c in watchdog_timer_isr_callback (timer=0x3ffd1108) at watchdog.c:330\n"
+    "======================== THREADS INFO =========================\n"
+)
+
+
+def _fake_resolve_with_stack(dump_path, prog_path):
+    fd, core_elf = tempfile.mkstemp()
+    os.close(fd)
+    return ([], [], _STACK_TEXT, core_elf, [])
+
+
+def test_cron_computes_signature_on_symbolication(client, db_conn, monkeypatch):
+    from app import decode
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-sig")
+    helpers.create_elf_file(db_conn, "proj-cron-sig", "1.0")
+    crash_id = helpers.create_crash(db_conn, "proj-cron-sig", "1.0", device_id, crash_dmp=b"raw-dump")
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT signature FROM crash WHERE crash_id = %s", (crash_id,))
+        signature = cur.fetchone()[0]
+        assert signature is not None
+        assert len(signature) == 64
+
+
+def test_cron_backfills_signature_for_already_symbolicated_crashes(client, db_conn, monkeypatch):
+    from app import decode
+
+    # Backfill must not re-run symbolication - if it did, this would blow up.
+    def _fail(*a, **k):
+        raise AssertionError("backfill should not re-symbolicate")
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fail)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-sig-backfill")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-cron-sig-backfill", "1.0", device_id, dump=_STACK_TEXT,
+    )
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT signature FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] is not None
+
+
+def test_cron_backfill_leaves_unparseable_dump_signature_null(client, db_conn):
+    device_id = helpers.create_device(db_conn, "dev-cron-sig-unparseable")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-cron-sig-unparseable", "1.0", device_id, dump="Failed to load core dump.",
+    )
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT signature FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] is None
+
+
 def test_cron_sends_webhook(client, db_conn, monkeypatch):
     import requests
     from app import decode

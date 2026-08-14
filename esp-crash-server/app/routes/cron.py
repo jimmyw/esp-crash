@@ -17,6 +17,7 @@ from sqlalchemy import func, select, update
 import decode_module_coredump as mod_decoder
 from .. import decode
 from ..ai_tagging import summarize_and_tag
+from ..crash_signature import compute_signature
 from ..models import Crash, ElfFile, ProjectAuth, ProjectSlackIntegration, ProjectWebhook, db
 from ..rendering import external_url_for
 
@@ -101,7 +102,10 @@ def cron():
         db.session.execute(
             update(Crash)
             .where(Crash.crash_id == crash["crash_id"])
-            .values(dump=dump, module_names=module_names, module_map=last_module_map)
+            .values(
+                dump=dump, module_names=module_names, module_map=last_module_map,
+                signature=compute_signature(dump),
+            )
         )
         db.session.commit()
         current_app.logger.info("Updated crash {} (modules: {})".format(crash["crash_id"], module_names))
@@ -260,6 +264,29 @@ def cron():
                     current_app.logger.error(f"Unexpected error sending Slack notification for crash {crash['crash_id']}: {e}")
         else:
             current_app.logger.info(f"No Slack integrations found for project {project_name}")
+
+    # Non-AI duplicate-signature backfill: crashes that already have a dump
+    # but predate this feature (or whose earlier signature attempt found no
+    # parseable backtrace, e.g. a decode-failure dump - those legitimately
+    # stay NULL and get harmlessly re-checked each tick). Pure local
+    # computation, no external calls - unlike the AI step below there's no
+    # cost or backlog-explosion concern, so a generous batch size just runs
+    # the backlog down over a handful of ticks.
+    backfill_targets = db.session.execute(
+        select(Crash.crash_id, Crash.dump)
+        .where(Crash.dump.is_not(None), Crash.signature.is_(None))
+        .order_by(Crash.crash_id.desc())
+        .limit(500)
+    ).mappings().all()
+    if backfill_targets:
+        processed_anything = True
+        for row in backfill_targets:
+            db.session.execute(
+                update(Crash).where(Crash.crash_id == row["crash_id"])
+                .values(signature=compute_signature(row["dump"]))
+            )
+        db.session.commit()
+        current_app.logger.info(f"Backfilled signature for {len(backfill_targets)} crashes")
 
     # AI summary + tagging: a second, independent pass with its own retry
     # gate (ai_summary IS NULL), scoped to projects that have explicitly

@@ -114,6 +114,53 @@ def test_summarize_and_tag_reuses_exact_duplicate_without_calling_api(app, db_co
         assert cur.fetchone()[0] == "watchdog"
 
 
+def test_summarize_and_tag_reuses_signature_duplicate_without_calling_api(app, db_conn, monkeypatch):
+    """Two crashes with different (device-specific) dump text but the same
+    non-AI crash_signature.py fingerprint - the "same bug, different
+    device" case exact-dump matching can't catch."""
+    calls = []
+
+    def fail_if_called(api_key=None):
+        raise AssertionError("Anthropic client should not be constructed for a signature duplicate")
+
+    monkeypatch.setattr(ai_tagging, "Anthropic", fail_if_called)
+
+    helpers.create_project(db_conn, "proj-ai-sig", github_user="alice")
+    device_id = helpers.create_device(db_conn, "dev-ai-sig")
+    shared_signature = "a" * 64
+
+    source_id = helpers.create_crash(
+        db_conn, "proj-ai-sig", "1.0", device_id,
+        dump="device A's dump, addr 0x1111", signature=shared_signature,
+        ai_summary="Watchdog fired in ota_manifest task.",
+    )
+    tag_id = helpers.create_tag(db_conn, "proj-ai-sig", "watchdog")
+    helpers.tag_crash(db_conn, source_id, tag_id)
+
+    new_id = helpers.create_crash(
+        db_conn, "proj-ai-sig", "1.0", device_id,
+        dump="device B's dump, addr 0x2222", signature=shared_signature,
+    )
+
+    app.config["ANTHROPIC_API_KEY"] = "sk-test"
+    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
+    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
+
+    with app.app_context():
+        result = ai_tagging.summarize_and_tag(new_id, "proj-ai-sig")
+
+    assert calls == []
+    assert str(source_id) in result
+    assert "Watchdog fired in ota_manifest task." in result
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT t.name FROM tag t JOIN crash_tag ct ON ct.tag_id = t.tag_id WHERE ct.crash_id = %s",
+            (new_id,),
+        )
+        assert cur.fetchone()[0] == "watchdog"
+
+
 def test_summarize_and_tag_ignores_duplicates_from_other_projects(app, db_conn, monkeypatch):
     """Same dump text in a different project must not be treated as a
     duplicate - tags are project-scoped and coincidental content matches

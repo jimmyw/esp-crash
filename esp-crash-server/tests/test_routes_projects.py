@@ -52,6 +52,40 @@ def test_list_crashes_all_projects(client, db_conn):
     assert b"dev-3" in resp.data
 
 
+def test_list_project_crashes_signature_filter(client, db_conn):
+    helpers.create_project(db_conn, "proj-sig", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-sig")
+    sig = "b" * 64
+    helpers.create_crash(db_conn, "proj-sig", "1.0", device_id, signature=sig)
+    helpers.create_crash(db_conn, "proj-sig", "1.0", device_id)  # no signature - must not match
+
+    resp = client.get(f"/projects/proj-sig?signature={sig}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "Related crashes matching signature" in body
+    assert sig[:12] in body
+
+
+def test_list_crashes_signature_filter_spans_projects(client, db_conn):
+    """The Related link on the crash page points at the global /crash
+    listing (not a per-project one) - a signature match must be found
+    regardless of which project it's in."""
+    sig = "c" * 64
+    helpers.create_project(db_conn, "proj-sig-a", github_user="none")
+    device_a = helpers.create_device(db_conn, "dev-sig-a")
+    helpers.create_crash(db_conn, "proj-sig-a", "1.0", device_a, signature=sig)
+
+    helpers.create_project(db_conn, "proj-sig-b", github_user="none")
+    device_b = helpers.create_device(db_conn, "dev-sig-b")
+    helpers.create_crash(db_conn, "proj-sig-b", "1.0", device_b, signature=sig)
+
+    resp = client.get(f"/crash?signature={sig}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "proj-sig-a" in body
+    assert "proj-sig-b" in body
+
+
 def test_list_builds_empty(client, db_conn):
     helpers.create_project(db_conn, "proj-b", github_user="none")
     resp = client.get("/projects/proj-b/builds")
