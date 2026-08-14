@@ -22,7 +22,10 @@ def add_crash_tag(project_name, crash_id):
     if not allowed:
         return "Forbidden: You do not have access to this project.", 403
 
-    tag_name = (request.form.get('tag_name') or '').strip()
+    # A typed new-tag name takes priority over whatever's selected in the
+    # existing-tags dropdown, so picking a tag then also typing a new one
+    # does what it looks like it does.
+    tag_name = (request.form.get('new_tag_name') or request.form.get('tag_name') or '').strip()
     if not tag_name:
         return "Missing tag_name", 400
     tag_description = (request.form.get('tag_description') or '').strip() or None

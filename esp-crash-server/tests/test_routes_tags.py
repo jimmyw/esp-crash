@@ -27,6 +27,29 @@ def test_add_crash_tag_requires_name(client, db_conn):
     assert resp.status_code == 400
 
 
+def test_add_crash_tag_new_tag_name_takes_priority(client, db_conn):
+    """Picking an existing tag in the dropdown AND typing a new one submits
+    both form fields - the typed one must win, matching what it looks like
+    the form does."""
+    helpers.create_project(db_conn, "proj-t1b", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-t1b")
+    crash_id = helpers.create_crash(db_conn, "proj-t1b", "1.0", device_id)
+    helpers.create_tag(db_conn, "proj-t1b", "existing")
+
+    resp = client.post(
+        f"/projects/proj-t1b/{crash_id}/tags",
+        data={"tag_name": "existing", "new_tag_name": "Brand New"},
+    )
+    assert resp.status_code == 302
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT t.name FROM tag t JOIN crash_tag ct ON ct.tag_id = t.tag_id WHERE ct.crash_id = %s",
+            (crash_id,),
+        )
+        assert cur.fetchone()[0] == "brand new"
+
+
 def test_remove_crash_tag(client, db_conn):
     helpers.create_project(db_conn, "proj-t3", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-t3")
@@ -52,6 +75,28 @@ def test_crash_page_shows_tag_badge(client, db_conn):
     resp = client.get(f"/projects/proj-t4/{crash_id}")
     assert resp.status_code == 200
     assert b"duplicate" in resp.data
+    # Tag badges display uppercase (CSS only - stored name stays lowercase).
+    assert 'class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase' in resp.data.decode()
+
+
+def test_crash_page_tag_picker_is_a_visible_select(client, db_conn):
+    """The add-tag picker must be a real <select> listing the project's
+    existing tags, not an <input list>/<datalist> pair that renders as an
+    apparently-empty text box until you start typing."""
+    helpers.create_project(db_conn, "proj-t4b", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-t4b")
+    crash_id = helpers.create_crash(db_conn, "proj-t4b", "1.0", device_id)
+    # A tag that exists for the project but isn't attached to this crash yet -
+    # exactly what the picker needs to show.
+    helpers.create_tag(db_conn, "proj-t4b", "unattached-tag", description="pick me")
+
+    resp = client.get(f"/projects/proj-t4b/{crash_id}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert '<select name="tag_name"' in body
+    assert '<option value="unattached-tag"' in body
+    assert "<datalist" not in body
+    assert 'name="new_tag_name"' in body
 
 
 def test_list_project_crashes_tag_filter(client, db_conn):
