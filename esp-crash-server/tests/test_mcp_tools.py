@@ -259,6 +259,45 @@ def test_list_crashes_tag_filter(app, db_conn, ctx):
     assert {c["crash_id"] for c in unfiltered} == {crash_1, crash_2}
 
 
+def test_list_crashes_signature_filter(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    sig = "a" * 64
+    crash_1 = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
+    crash_2 = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
+    helpers.create_crash(db_conn, "proj-a", "1.0", dev)  # different signature (none) - must not match
+
+    filtered = tools.list_crashes("alice", signature=sig)
+    assert {c["crash_id"] for c in filtered} == {crash_1, crash_2}
+    assert all(c["signature"] == sig for c in filtered)
+
+
+def test_list_crashes_signature_filter_scoped_to_caller(app, db_conn, ctx):
+    """The signature filter must still respect project ACLs - it's not a
+    backdoor around list_crashes's normal scoping."""
+    sig = "b" * 64
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev_a = helpers.create_device(db_conn, "dev-a")
+    helpers.create_crash(db_conn, "proj-a", "1.0", dev_a, signature=sig)
+
+    helpers.create_project(db_conn, "proj-b", github_user="bob")
+    dev_b = helpers.create_device(db_conn, "dev-b")
+    helpers.create_crash(db_conn, "proj-b", "1.0", dev_b, signature=sig)
+
+    alice_view = tools.list_crashes("alice", signature=sig)
+    assert [c["project_name"] for c in alice_view] == ["proj-a"]
+
+
+def test_get_crash_includes_signature(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    sig = "c" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
+
+    crash = tools.get_crash("alice", crash_id)
+    assert crash["signature"] == sig
+
+
 def test_get_crash_includes_tags(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
