@@ -15,19 +15,21 @@ def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
 
 
 def external_url_for(endpoint, **values):
-    """Generate external URL for Slack notifications."""
-    external_url = current_app.config.get("EXTERNAL_URL")
-    if external_url:
-        # Remove trailing slash from external URL
-        external_url = external_url.rstrip('/')
-        # Generate the path using url_for
-        with current_app.app_context():
-            path = url_for(endpoint, **values)
-        return f"{external_url}{path}"
-    else:
-        # Fallback to regular url_for with _external=True
-        with current_app.app_context():
-            return url_for(endpoint, _external=True, **values)
+    """Generate external URL for Slack/webhook notifications.
+
+    url_for() needs an active *request* context to build anything (a bare
+    app_context isn't enough - it raises "Unable to build URLs outside an
+    active request without 'SERVER_NAME' configured"). That's always been
+    true during a real HTTP request (this app doesn't set SERVER_NAME), but
+    cron_runner.py (see cron_runner.py/_tick) calls into cron() with only
+    an app context, no request - so push a throwaway test_request_context
+    to give url_for something to hang off regardless of which of those two
+    ways we got here."""
+    external_url = (current_app.config.get("EXTERNAL_URL") or "").rstrip('/')
+    with current_app.test_request_context(base_url=external_url or None):
+        if external_url:
+            return f"{external_url}{url_for(endpoint, **values)}"
+        return url_for(endpoint, _external=True, **values)
 
 
 def render_template(template_name, **context):
