@@ -59,7 +59,9 @@ endblock %}
                 {% endif %}
                 <th scope="col" class="px-6 py-3">Project Version</th>
                 <th scope="col" class="px-6 py-3">Device Id</th>
+                {% if any_modules %}
                 <th scope="col" class="px-6 py-3">Modules</th>
+                {% endif %}
                 <th scope="col" class="px-6 py-3">Tags</th>
                 <th scope="col" class="px-6 py-3"></th>
             </tr>
@@ -98,6 +100,7 @@ endblock %}
                     </a>
                     {% endif %}
                 </td>
+                {% if any_modules %}
                 <td class="px-6 py-4">
                     {% if crash.module_names %}
                     <div class="flex flex-wrap gap-1">
@@ -111,6 +114,7 @@ endblock %}
                     <span class="text-gray-300">&mdash;</span>
                     {% endif %}
                 </td>
+                {% endif %}
                 <td class="px-6 py-4">
                     {% if crash.tags %}
                     <div class="flex flex-wrap gap-1">

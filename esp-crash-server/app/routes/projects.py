@@ -125,9 +125,14 @@ def list_project_crashes(project_name):
             select(Tag.name).where(Tag.tag_id == tag_id)
         ).scalar_one_or_none()
 
+    # Only worth a whole column if at least one crash on this page actually
+    # references a module - otherwise it's just an empty-dash column on
+    # every row.
+    any_modules = any(c["module_names"] for c in crashes)
+
     # crash.module_names is populated at cron processing time, so no per-row
     # coredump parsing happens here.
-    return render_template('project.html', crashes = crashes, project_name = project_name, search = search or "", limit = limit, offset = offset, tag_id = tag_id, active_tag = active_tag, signature = signature, full_count = crashes[0]["full_count"] if len(crashes) > 0 else 0)
+    return render_template('project.html', crashes = crashes, project_name = project_name, search = search or "", limit = limit, offset = offset, tag_id = tag_id, active_tag = active_tag, signature = signature, any_modules = any_modules, full_count = crashes[0]["full_count"] if len(crashes) > 0 else 0)
 
 
 @login_required
