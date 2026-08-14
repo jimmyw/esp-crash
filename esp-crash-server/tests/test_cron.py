@@ -1,5 +1,6 @@
 import os
 import tempfile
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -123,7 +124,7 @@ def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch
     _configure_ai(app)
 
     device_id = helpers.create_device(db_conn, "dev-cron-ai-1")
-    helpers.create_project(db_conn, "proj-cron-ai-granted", github_user="esp-crash-bot")
+    helpers.create_project(db_conn, "proj-cron-ai-granted", github_user="esp-crash-bot", date=datetime.utcnow() - timedelta(hours=1))
     helpers.create_elf_file(db_conn, "proj-cron-ai-granted", "1.0")
     granted_crash = helpers.create_crash(db_conn, "proj-cron-ai-granted", "1.0", device_id, crash_dmp=b"raw-dump")
 
@@ -136,6 +137,41 @@ def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch
     assert calls == [(granted_crash, "proj-cron-ai-granted")]
 
 
+def test_cron_ai_summary_excludes_pre_grant_backlog(client, db_conn, monkeypatch, app):
+    """Granting esp-crash-bot access to a project with years of crash
+    history must not trigger a backfill of all of them - only crashes from
+    after the grant (Crash.date > ProjectAuth.date) are eligible."""
+    from app import decode
+    from app.routes import cron
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    calls = []
+    monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append(crash_id))
+
+    grant_time = datetime.utcnow()
+    helpers.create_project(db_conn, "proj-cron-ai-backlog", github_user="esp-crash-bot", date=grant_time)
+    _configure_ai(app)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-backlog")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-backlog", "1.0")
+
+    # Already-symbolicated crash from before the grant - must be skipped.
+    old_crash = helpers.create_crash(
+        db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="old crash, already symbolicated", date=grant_time - timedelta(days=30),
+    )
+    # New, already-symbolicated crash from after the grant - must be picked up.
+    new_crash = helpers.create_crash(
+        db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="new crash, already symbolicated", date=grant_time + timedelta(hours=1),
+    )
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+    assert calls == [new_crash]
+    assert old_crash not in calls
+
+
 def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, app):
     from app import decode
     from app.routes import cron
@@ -146,7 +182,7 @@ def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, 
     _configure_ai(app)
 
     device_id = helpers.create_device(db_conn, "dev-cron-ai-2")
-    helpers.create_project(db_conn, "proj-cron-ai-done", github_user="esp-crash-bot")
+    helpers.create_project(db_conn, "proj-cron-ai-done", github_user="esp-crash-bot", date=datetime.utcnow() - timedelta(hours=1))
     helpers.create_elf_file(db_conn, "proj-cron-ai-done", "1.0")
     helpers.create_crash(
         db_conn, "proj-cron-ai-done", "1.0", device_id,
@@ -171,7 +207,7 @@ def test_cron_ai_summary_failure_is_logged_and_skipped(client, db_conn, monkeypa
     _configure_ai(app)
 
     device_id = helpers.create_device(db_conn, "dev-cron-ai-3")
-    helpers.create_project(db_conn, "proj-cron-ai-fail", github_user="esp-crash-bot")
+    helpers.create_project(db_conn, "proj-cron-ai-fail", github_user="esp-crash-bot", date=datetime.utcnow() - timedelta(hours=1))
     helpers.create_elf_file(db_conn, "proj-cron-ai-fail", "1.0")
     crash_id = helpers.create_crash(db_conn, "proj-cron-ai-fail", "1.0", device_id, crash_dmp=b"raw-dump")
 
