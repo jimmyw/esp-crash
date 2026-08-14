@@ -80,6 +80,9 @@ COPY alembic/ alembic/
 # MCP server (run via `uvicorn mcp_server:app`).
 COPY mcp_server.py .
 COPY mcp_app/ mcp_app/
+# Cron sidecar (run via `python cron_runner.py`, see docker-compose.yml's
+# `cron` service).
+COPY cron_runner.py .
 
 ENV FLASK_APP=server.py
 ENV FLASK_RUN_PORT=8000
