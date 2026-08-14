@@ -108,7 +108,7 @@ endblock %}
                     <div class="flex flex-wrap gap-1">
                         {% for t in crash.tags %}
                         <a href="{{ url_for(request.endpoint, project_name=project_name, tag_id=t.tag_id, search=search, limit=limit) }}"
-                           class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 hover:bg-amber-200"
+                           class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase bg-amber-100 text-amber-800 hover:bg-amber-200"
                            title="{{ t.description or '' }}">
                             {{ t.name }}
                         </a>

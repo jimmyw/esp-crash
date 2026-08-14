@@ -65,3 +65,24 @@ def test_list_project_crashes_tag_filter(client, db_conn):
     resp = client.get(f"/projects/proj-t5?tag_id={tag_id}")
     assert resp.status_code == 200
     assert b"Filtered by tag" in resp.data
+
+
+def test_list_project_crashes_tags_sorted_uppercase(client, db_conn):
+    helpers.create_project(db_conn, "proj-t6", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-t6")
+    crash_id = helpers.create_crash(db_conn, "proj-t6", "1.0", device_id)
+    # Inserted out of alphabetical order - the rendered badges must not be.
+    tag_z = helpers.create_tag(db_conn, "proj-t6", "zzztagz")
+    tag_a = helpers.create_tag(db_conn, "proj-t6", "aaataga")
+    tag_m = helpers.create_tag(db_conn, "proj-t6", "mmmtagm")
+    for tag_id in (tag_z, tag_a, tag_m):
+        helpers.tag_crash(db_conn, crash_id, tag_id)
+
+    resp = client.get("/projects/proj-t6")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # Badges render lowercase tag names uppercased purely via CSS, so the
+    # underlying stored casing (and click-to-filter matching) is untouched -
+    # assert ordering on the stored names and the CSS class that uppercases them.
+    assert body.index("aaataga") < body.index("mmmtagm") < body.index("zzztagz")
+    assert 'class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase' in body
