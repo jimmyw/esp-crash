@@ -81,7 +81,7 @@
 <div class="w-5/6 mt-4">
     <div class="flex flex-wrap items-center gap-2">
         {% for t in crash.tags %}
-        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800" title="{{ t.description or '' }}">
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase bg-amber-100 text-amber-800" title="{{ t.description or '' }}">
             <a href="{{ url_for('list_project_crashes', project_name=crash.project_name, tag_id=t.tag_id) }}" class="hover:underline">{{ t.name }}</a>
             <form method="post" action="{{ url_for('remove_crash_tag', project_name=crash.project_name, crash_id=crash.crash_id, tag_id=t.tag_id) }}" class="inline">
                 <button type="submit" class="ml-1 text-amber-800 hover:text-amber-900" title="Remove tag">&times;</button>
@@ -89,12 +89,14 @@
         </span>
         {% endfor %}
         <form method="post" action="{{ url_for('add_crash_tag', project_name=crash.project_name, crash_id=crash.crash_id) }}" class="flex items-center gap-1">
-            <input list="tag-options" name="tag_name" placeholder="Add a tag..." class="p-1 text-sm border-2 border-gray-300 rounded-md">
-            <datalist id="tag-options">
+            <select name="tag_name" class="p-1 text-sm uppercase border-2 border-gray-300 rounded-md">
+                <option value="">Select existing tag&hellip;</option>
                 {% for t in project_tags %}
-                <option value="{{ t.name }}">{{ t.description or '' }}</option>
+                <option value="{{ t.name }}" title="{{ t.description or '' }}">{{ t.name }}</option>
                 {% endfor %}
-            </datalist>
+            </select>
+            <span class="text-xs text-gray-400">or</span>
+            <input type="text" name="new_tag_name" placeholder="New tag name" class="p-1 text-sm border-2 border-gray-300 rounded-md">
             <input type="text" name="tag_description" placeholder="Description (new tags only)" class="p-1 text-sm border-2 border-gray-300 rounded-md">
             <button type="submit" class="p-1 px-2 text-sm bg-blue-500 text-white rounded-md">Add</button>
         </form>
