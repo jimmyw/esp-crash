@@ -10,3 +10,4 @@ flask_sqlalchemy
 slack-sdk
 mcp==1.28.1
 uvicorn
+anthropic

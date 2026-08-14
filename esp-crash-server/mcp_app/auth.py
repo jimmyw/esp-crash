@@ -42,11 +42,22 @@ _AUTH_CODE_TTL = 600  # seconds
 class GitHubOAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
-    def __init__(self, github_client_id, github_client_secret, callback_url, mcp_scope="esp-crash"):
+    def __init__(
+        self, github_client_id, github_client_secret, callback_url, mcp_scope="esp-crash",
+        service_token=None, service_github_user=None,
+    ):
         self.github_client_id = github_client_id
         self.github_client_secret = github_client_secret
         self.callback_url = callback_url  # {MCP_PUBLIC_URL}/github/callback
         self.mcp_scope = mcp_scope
+        # Optional non-interactive path for trusted automation (e.g. the cron
+        # worker's Claude-driven summarize/tag call) - a static shared secret
+        # standing in for a browser-driven GitHub login. subject is just a
+        # project_auth.github string like any other; it's never validated
+        # against a real GitHub account, so the caller must be explicitly
+        # granted project_auth access like any other user.
+        self.service_token = service_token
+        self.service_github_user = service_github_user
 
         self.clients: dict[str, OAuthClientInformationFull] = {}
         self.auth_codes: dict[str, AuthorizationCode] = {}
@@ -159,6 +170,11 @@ class GitHubOAuthProvider(
     # ---- resource-server side ---------------------------------------------
 
     async def load_access_token(self, token):
+        if self.service_token and token == self.service_token:
+            return AccessToken(
+                token=token, client_id="service", scopes=[self.mcp_scope],
+                expires_at=None, subject=self.service_github_user,
+            )
         at = self.access_tokens.get(token)
         if at is None:
             return None

@@ -16,7 +16,8 @@ from sqlalchemy import func, select, update
 
 import decode_module_coredump as mod_decoder
 from .. import decode
-from ..models import Crash, ElfFile, ProjectSlackIntegration, ProjectWebhook, db
+from ..ai_tagging import summarize_and_tag
+from ..models import Crash, ElfFile, ProjectAuth, ProjectSlackIntegration, ProjectWebhook, db
 from ..rendering import external_url_for
 
 
@@ -262,6 +263,38 @@ def cron():
         else:
             current_app.logger.info(f"No Slack integrations found for project {project_name}")
 
+    # AI summary + tagging: a second, independent pass with its own retry
+    # gate (ai_summary IS NULL), scoped to projects that have explicitly
+    # granted the service identity ACL access - see app/ai_tagging.py. Gate
+    # on every required config value, not just MCP_SERVICE_GITHUB_USER - a
+    # partially-configured deployment would otherwise retry a doomed API
+    # call every tick instead of a clean, informative no-op.
+    service_user = current_app.config.get("MCP_SERVICE_GITHUB_USER")
+    ai_configured = bool(
+        service_user
+        and current_app.config.get("ANTHROPIC_API_KEY")
+        and current_app.config.get("MCP_PUBLIC_URL")
+        and current_app.config.get("MCP_SERVICE_TOKEN")
+    )
+    if service_user and not ai_configured:
+        current_app.logger.warning(
+            "MCP_SERVICE_GITHUB_USER is set but one of ANTHROPIC_API_KEY / "
+            "MCP_PUBLIC_URL / MCP_SERVICE_TOKEN is not - skipping AI summarize/tag step"
+        )
+    if ai_configured:
+        ai_crashes = db.session.execute(
+            select(Crash.crash_id, Crash.project_name)
+            .join(ProjectAuth, (Crash.project_name == ProjectAuth.project_name)
+                                & (ProjectAuth.github == service_user))
+            .where(Crash.dump.is_not(None), Crash.ai_summary.is_(None))
+            .limit(10)
+        ).mappings().all()
+        for crash in ai_crashes:
+            try:
+                summarize_and_tag(crash["crash_id"], crash["project_name"])
+                current_app.logger.info(f"AI-summarized crash {crash['crash_id']}")
+            except Exception as e:
+                current_app.logger.error(f"AI summarize/tag failed for crash {crash['crash_id']}: {e}")
 
     # return just a 200 OK
     return "OK\n", 200

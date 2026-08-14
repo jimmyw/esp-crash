@@ -33,7 +33,7 @@ def show_project_crash(project_name, crash_id):
             Crash.crash_id, Crash.date, Crash.project_name, Crash.device_id,
             Crash.project_ver, Crash.crash_dmp, Device.ext_device_id,
             func.coalesce(Device.alias, "").label("device_alias"), Crash.dump,
-            ProjectSettings.device_url_template, Crash.module_map,
+            ProjectSettings.device_url_template, Crash.module_map, Crash.ai_summary,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)

@@ -38,6 +38,7 @@ class Crash(db.Model):
     dump = db.Column(db.Text)
     module_names = db.Column(ARRAY(db.Text))
     module_map = db.Column(JSONB)
+    ai_summary = db.Column(db.Text)
 
 
 class ElfFile(db.Model):

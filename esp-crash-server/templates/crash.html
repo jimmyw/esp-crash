@@ -72,6 +72,12 @@
     </div>
 </div>
 
+{% if crash.ai_summary %}
+<div class="w-5/6 mt-4 p-4 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-slate-700 italic">
+    {{ crash.ai_summary }}
+</div>
+{% endif %}
+
 <div class="w-5/6 mt-4">
     <div class="flex flex-wrap items-center gap-2">
         {% for t in crash.tags %}
