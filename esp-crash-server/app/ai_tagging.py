@@ -9,9 +9,10 @@ matching how app.decode is split out for cron's symbolication step.
 """
 from anthropic import Anthropic
 from flask import current_app
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from .models import Crash, db
+from .models import Crash, CrashTag, db
 
 MCP_BETA = "mcp-client-2025-11-20"
 # Haiku 4.5 over Sonnet 5: this runs on every new crash, and in practice
@@ -22,11 +23,63 @@ MCP_BETA = "mcp-client-2025-11-20"
 MODEL = "claude-haiku-4-5"
 
 
+def _find_duplicate(project_name, dump, crash_id):
+    """Most recent other already-summarized crash in the same project whose
+    symbolicated output is byte-identical to this one's, if any. Matches on
+    Crash.dump (what the AI actually reads and what's shown on the crash
+    page) rather than the raw crash_dmp blob - it's the field that
+    determines the summary/tags, and it's deterministic for a true repeat
+    (e.g. a retried upload, or a device re-crashing in identical state).
+    Does NOT catch "same root cause, different device" - device-specific
+    state makes the symbolicated dump unique even for the same bug; that
+    needs fuzzy/signature matching, a separate follow-up."""
+    return db.session.execute(
+        select(Crash.crash_id, Crash.ai_summary)
+        .where(
+            Crash.project_name == project_name,
+            Crash.dump == dump,
+            Crash.ai_summary.is_not(None),
+            Crash.crash_id != crash_id,
+        )
+        .order_by(Crash.date.desc())
+        .limit(1)
+    ).mappings().first()
+
+
+def _copy_tags(source_crash_id, target_crash_id):
+    tag_ids = db.session.execute(
+        select(CrashTag.tag_id).where(CrashTag.crash_id == source_crash_id)
+    ).scalars().all()
+    for tag_id in tag_ids:
+        db.session.execute(
+            pg_insert(CrashTag).values(crash_id=target_crash_id, tag_id=tag_id)
+            .on_conflict_do_nothing(index_elements=["crash_id", "tag_id"])
+        )
+
+
 def summarize_and_tag(crash_id, project_name):
     """Ask Claude to summarize this crash and apply appropriate tags via the
     app's own MCP server, then store the summary. Raises on any failure -
     callers should catch, log, and move on: ai_summary stays NULL, so the
-    crash is picked up again on a later cron tick."""
+    crash is picked up again on a later cron tick.
+
+    First checks for an exact-content duplicate (see _find_duplicate) and,
+    if found, copies its summary and tags directly - no API call at all."""
+    dump = db.session.execute(
+        select(Crash.dump).where(Crash.crash_id == crash_id)
+    ).scalar_one_or_none()
+
+    if dump:
+        duplicate = _find_duplicate(project_name, dump, crash_id)
+        if duplicate is not None:
+            summary = f"(Same as crash #{duplicate['crash_id']}.) {duplicate['ai_summary']}"
+            _copy_tags(duplicate["crash_id"], crash_id)
+            db.session.execute(
+                update(Crash).where(Crash.crash_id == crash_id).values(ai_summary=summary)
+            )
+            db.session.commit()
+            return summary
+
     client = Anthropic(api_key=current_app.config["ANTHROPIC_API_KEY"])
     mcp_url = current_app.config["MCP_PUBLIC_URL"].rstrip("/") + "/mcp"
 
