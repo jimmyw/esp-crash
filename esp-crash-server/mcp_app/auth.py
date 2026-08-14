@@ -9,15 +9,23 @@ which the tools read to enforce per-user ACLs.
 
 The SDK's token handler verifies PKCE (S256) and redirect_uri consistency
 before calling exchange_authorization_code, so this provider does not repeat
-that. Client/code/token stores are in-memory: fine for v1, but tokens reset on
-process restart (clients must re-authenticate) - persisting them (e.g. a DB
-table) is a deliberate follow-up.
+that. Registered clients and issued access/refresh tokens are persisted to
+the DB (mcp_oauth_client / mcp_access_token / mcp_refresh_token, each a
+client_id-or-token-keyed row plus a JSONB dump of the SDK's Pydantic model)
+so an `mcp` container restart - routine during active development - doesn't
+force every already-registered client to re-authenticate. Authorization
+codes and the upstream-GitHub-flow `_pending` state are deliberately left
+in-memory: both are short-lived (a single live browser round-trip / a
+600s-TTL code), so losing them on restart just means a login in flight has
+to be retried, not a full re-auth.
 """
 import secrets
 import time
 from urllib.parse import urlencode
 
 import httpx
+from sqlalchemy import delete
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -31,6 +39,8 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
+from app.models import McpAccessToken, McpOAuthClient, McpRefreshToken, db
+
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
@@ -43,9 +53,15 @@ class GitHubOAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
     def __init__(
-        self, github_client_id, github_client_secret, callback_url, mcp_scope="esp-crash",
-        service_token=None, service_github_user=None,
+        self, flask_app, github_client_id, github_client_secret, callback_url,
+        mcp_scope="esp-crash", service_token=None, service_github_user=None,
     ):
+        # Methods here run outside any Flask request cycle (invoked directly
+        # by FastMCP/Starlette internals), so DB-touching code below pushes
+        # its own app context via this handle rather than relying on one
+        # already being active - same reasoning as the @mcp.tool wrappers in
+        # server.py.
+        self.flask_app = flask_app
         self.github_client_id = github_client_id
         self.github_client_secret = github_client_secret
         self.callback_url = callback_url  # {MCP_PUBLIC_URL}/github/callback
@@ -59,20 +75,30 @@ class GitHubOAuthProvider(
         self.service_token = service_token
         self.service_github_user = service_github_user
 
-        self.clients: dict[str, OAuthClientInformationFull] = {}
         self.auth_codes: dict[str, AuthorizationCode] = {}
-        self.access_tokens: dict[str, AccessToken] = {}
-        self.refresh_tokens: dict[str, RefreshToken] = {}
         # upstream-flow state -> (mcp_client_id, original AuthorizationParams)
         self._pending: dict[str, tuple[str, AuthorizationParams]] = {}
 
     # ---- dynamic client registration --------------------------------------
 
     async def get_client(self, client_id):
-        return self.clients.get(client_id)
+        with self.flask_app.app_context():
+            row = db.session.get(McpOAuthClient, client_id)
+            if row is None:
+                return None
+            return OAuthClientInformationFull.model_validate(row.data)
 
     async def register_client(self, client_info):
-        self.clients[client_info.client_id] = client_info
+        with self.flask_app.app_context():
+            db.session.execute(
+                pg_insert(McpOAuthClient)
+                .values(client_id=client_info.client_id, data=client_info.model_dump(mode="json"))
+                .on_conflict_do_update(
+                    index_elements=["client_id"],
+                    set_={"data": client_info.model_dump(mode="json")},
+                )
+            )
+            db.session.commit()
 
     # ---- authorize: delegate to GitHub ------------------------------------
 
@@ -156,13 +182,19 @@ class GitHubOAuthProvider(
     # ---- refresh -----------------------------------------------------------
 
     async def load_refresh_token(self, client, refresh_token):
-        rt = self.refresh_tokens.get(refresh_token)
-        if rt is None or rt.client_id != client.client_id:
+        with self.flask_app.app_context():
+            row = db.session.get(McpRefreshToken, refresh_token)
+            if row is None:
+                return None
+            rt = RefreshToken.model_validate(row.data)
+        if rt.client_id != client.client_id:
             return None
         return rt
 
     async def exchange_refresh_token(self, client, refresh_token, scopes):
-        self.refresh_tokens.pop(refresh_token.token, None)
+        with self.flask_app.app_context():
+            db.session.execute(delete(McpRefreshToken).where(McpRefreshToken.token == refresh_token.token))
+            db.session.commit()
         return self._issue_tokens(
             client.client_id, scopes or refresh_token.scopes, refresh_token.subject
         )
@@ -175,18 +207,23 @@ class GitHubOAuthProvider(
                 token=token, client_id="service", scopes=[self.mcp_scope],
                 expires_at=None, subject=self.service_github_user,
             )
-        at = self.access_tokens.get(token)
-        if at is None:
-            return None
-        if at.expires_at is not None and at.expires_at < time.time():
-            self.access_tokens.pop(token, None)
-            return None
-        return at
+        with self.flask_app.app_context():
+            row = db.session.get(McpAccessToken, token)
+            if row is None:
+                return None
+            at = AccessToken.model_validate(row.data)
+            if at.expires_at is not None and at.expires_at < time.time():
+                db.session.delete(row)
+                db.session.commit()
+                return None
+            return at
 
     async def revoke_token(self, token):
         # token is an AccessToken or RefreshToken; drop from whichever store.
-        self.access_tokens.pop(token.token, None)
-        self.refresh_tokens.pop(token.token, None)
+        with self.flask_app.app_context():
+            db.session.execute(delete(McpAccessToken).where(McpAccessToken.token == token.token))
+            db.session.execute(delete(McpRefreshToken).where(McpRefreshToken.token == token.token))
+            db.session.commit()
 
     # ---- helpers -----------------------------------------------------------
 
@@ -194,13 +231,28 @@ class GitHubOAuthProvider(
         access = secrets.token_urlsafe(32)
         refresh = secrets.token_urlsafe(32)
         now = int(time.time())
-        self.access_tokens[access] = AccessToken(
+        access_token = AccessToken(
             token=access, client_id=client_id, scopes=scopes,
             expires_at=now + _ACCESS_TOKEN_TTL, subject=subject,
         )
-        self.refresh_tokens[refresh] = RefreshToken(
+        refresh_token = RefreshToken(
             token=refresh, client_id=client_id, scopes=scopes, subject=subject,
         )
+        with self.flask_app.app_context():
+            db.session.execute(
+                pg_insert(McpAccessToken).values(
+                    token=access, client_id=client_id,
+                    expires_at=access_token.expires_at,
+                    data=access_token.model_dump(mode="json"),
+                )
+            )
+            db.session.execute(
+                pg_insert(McpRefreshToken).values(
+                    token=refresh, client_id=client_id,
+                    data=refresh_token.model_dump(mode="json"),
+                )
+            )
+            db.session.commit()
         return OAuthToken(
             access_token=access, token_type="Bearer", expires_in=_ACCESS_TOKEN_TTL,
             scope=" ".join(scopes), refresh_token=refresh,
