@@ -75,10 +75,14 @@ def list_projects(github_user):
     return [_serialize(r) for r in rows]
 
 
-def list_crashes(github_user, project_name=None, search=None, tag_id=None, limit=50, offset=0):
+def list_crashes(github_user, project_name=None, search=None, tag_id=None, signature=None, limit=50, offset=0):
     """Crashes across the caller's projects, newest first. Optional project
-    filter, full-text search (matches the web crash list's textsearch), and
-    tag_id filter (see list_tags for a project's available tag_ids)."""
+    filter, full-text search (matches the web crash list's textsearch),
+    tag_id filter (see list_tags for a project's available tag_ids), and
+    signature filter - a non-AI duplicate-grouping fingerprint (see
+    app/crash_signature.py); pass another crash's `signature` field to find
+    ones with the same likely root cause, the same thing the web UI's
+    "Related" link does."""
     conditions = [ProjectAuth.github == github_user]
     if project_name:
         conditions.append(Crash.project_name == project_name)
@@ -86,10 +90,12 @@ def list_crashes(github_user, project_name=None, search=None, tag_id=None, limit
         conditions.append(Crash.textsearch.op("@@")(func.plainto_tsquery(search)))
     if tag_id:
         conditions.append(Crash.crash_id.in_(select(CrashTag.crash_id).where(CrashTag.tag_id == tag_id)))
+    if signature:
+        conditions.append(Crash.signature == signature)
     rows = db.session.execute(
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
-            Crash.device_id, Crash.module_names, Crash.ai_summary,
+            Crash.device_id, Crash.module_names, Crash.ai_summary, Crash.signature,
             Device.ext_device_id, Device.alias,
         )
         .select_from(Crash)
@@ -116,6 +122,7 @@ def get_crash(github_user, crash_id):
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
             Crash.device_id, Device.ext_device_id, Device.alias,
             Crash.dump, Crash.module_map, Crash.module_names, Crash.ai_summary,
+            Crash.signature,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)

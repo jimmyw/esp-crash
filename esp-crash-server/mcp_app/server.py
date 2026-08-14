@@ -105,20 +105,26 @@ def build_app():
         project_name: str | None = None,
         search: str | None = None,
         tag_id: int | None = None,
+        signature: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
         """List crashes across your projects (newest first). Optionally filter
-        by project_name, a full-text search string, and/or tag_id (see
-        list_tags for a project's available tag_ids)."""
+        by project_name, a full-text search string, tag_id (see list_tags for
+        a project's available tag_ids), and/or signature - a non-AI
+        duplicate-grouping fingerprint each crash carries; pass another
+        crash's `signature` field (from list_crashes/get_crash) to find every
+        crash with the same likely root cause, the same thing the web UI's
+        "Related" link does."""
         with flask_app.app_context():
-            return tools.list_crashes(_current_user(), project_name, search, tag_id, limit, offset)
+            return tools.list_crashes(_current_user(), project_name, search, tag_id, signature, limit, offset)
 
     @mcp.tool()
     def get_crash(crash_id: int) -> dict | None:
-        """Get full detail for one crash, including the symbolicated dump and
-        the ELF builds available for its project/version. Null if not found or
-        not accessible to you."""
+        """Get full detail for one crash, including the symbolicated dump, the
+        ELF builds available for its project/version, and its `signature` (a
+        non-AI duplicate-grouping fingerprint - pass it to list_crashes to
+        find related crashes). Null if not found or not accessible to you."""
         with flask_app.app_context():
             return tools.get_crash(_current_user(), crash_id)
 
