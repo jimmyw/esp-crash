@@ -34,6 +34,30 @@ def test_list_project_crashes_shows_seeded_crash(client, db_conn):
     assert b"dev-1" in resp.data
 
 
+def test_list_project_crashes_hides_modules_column_when_none_referenced(client, db_conn):
+    helpers.create_project(db_conn, "proj-no-modules", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-no-modules")
+    helpers.create_crash(db_conn, "proj-no-modules", "1.0", device_id)
+
+    resp = client.get("/projects/proj-no-modules")
+    assert resp.status_code == 200
+    assert b">Modules<" not in resp.data
+
+
+def test_list_project_crashes_shows_modules_column_when_referenced(client, db_conn):
+    helpers.create_project(db_conn, "proj-with-modules", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-with-modules")
+    # One crash with modules, one without - the column must still show
+    # since at least one crash on the page has content for it.
+    helpers.create_crash(db_conn, "proj-with-modules", "1.0", device_id, module_names=["libfoo"])
+    helpers.create_crash(db_conn, "proj-with-modules", "1.0", device_id)
+
+    resp = client.get("/projects/proj-with-modules")
+    assert resp.status_code == 200
+    assert b">Modules<" in resp.data
+    assert b"libfoo" in resp.data
+
+
 def test_list_project_crashes_search_filters(client, db_conn):
     helpers.create_project(db_conn, "proj-z", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-2")

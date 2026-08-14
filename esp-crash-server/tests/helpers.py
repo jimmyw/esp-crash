@@ -25,12 +25,12 @@ def create_device(db_conn, ext_device_id, alias=None):
         return cur.fetchone()[0]
 
 
-def create_crash(db_conn, project_name, project_ver, device_id, crash_dmp=b"raw-dump-bytes", dump=None, ai_summary=None, date=None, signature=None):
+def create_crash(db_conn, project_name, project_ver, device_id, crash_dmp=b"raw-dump-bytes", dump=None, ai_summary=None, date=None, signature=None, module_names=None):
     with db_conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id, dump, ai_summary, signature)
-               VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s) RETURNING crash_id""",
-            (date, project_name, project_ver, psycopg2.Binary(crash_dmp), device_id, dump, ai_summary, signature),
+            """INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id, dump, ai_summary, signature, module_names)
+               VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s, %s) RETURNING crash_id""",
+            (date, project_name, project_ver, psycopg2.Binary(crash_dmp), device_id, dump, ai_summary, signature, module_names),
         )
         return cur.fetchone()[0]
 
