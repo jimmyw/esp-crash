@@ -80,6 +80,7 @@ def list_project_crashes(project_name):
             select(CrashTag.crash_id, Tag.tag_id, Tag.name, Tag.description)
             .join(Tag, CrashTag.tag_id == Tag.tag_id)
             .where(CrashTag.crash_id.in_(crash_ids))
+            .order_by(Tag.name)
         ).mappings().all()
         for t in tag_rows:
             tags_by_crash.setdefault(t["crash_id"], []).append(
