@@ -43,11 +43,22 @@ def _tick(app):
             app.logger.exception("cron tick failed")
 
 
+def _sleep_remaining(elapsed_since_last_run):
+    """Seconds left to wait before the next tick, given how long it's been
+    since the last one *started* - 0 (never negative) once that alone
+    already used up the whole interval, so a slow tick is followed
+    immediately by the next one instead of a slow tick PLUS a full extra
+    wait on top."""
+    return max(0.0, INTERVAL_SECONDS - elapsed_since_last_run)
+
+
 def main():
     app = create_app()
     app.logger.info("cron runner starting (interval=%ss)", INTERVAL_SECONDS)
+    last_run = time.monotonic()
     while True:
-        time.sleep(INTERVAL_SECONDS)
+        time.sleep(_sleep_remaining(time.monotonic() - last_run))
+        last_run = time.monotonic()
         _tick(app)
 
 
