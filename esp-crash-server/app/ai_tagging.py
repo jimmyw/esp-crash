@@ -31,13 +31,32 @@ def _find_duplicate(project_name, dump, crash_id):
     determines the summary/tags, and it's deterministic for a true repeat
     (e.g. a retried upload, or a device re-crashing in identical state).
     Does NOT catch "same root cause, different device" - device-specific
-    state makes the symbolicated dump unique even for the same bug; that
-    needs fuzzy/signature matching, a separate follow-up."""
+    state makes the symbolicated dump unique even for the same bug; see
+    _find_signature_duplicate for that case."""
     return db.session.execute(
         select(Crash.crash_id, Crash.ai_summary)
         .where(
             Crash.project_name == project_name,
             Crash.dump == dump,
+            Crash.ai_summary.is_not(None),
+            Crash.crash_id != crash_id,
+        )
+        .order_by(Crash.date.desc())
+        .limit(1)
+    ).mappings().first()
+
+
+def _find_signature_duplicate(project_name, signature, crash_id):
+    """Most recent other already-summarized crash in the same project with
+    the same non-AI crash_signature.py fingerprint - catches "same root
+    cause, different device" duplicates that _find_duplicate's exact-dump
+    match misses (e.g. a watchdog firing on the same task across many
+    devices, where only pointer/register values differ)."""
+    return db.session.execute(
+        select(Crash.crash_id, Crash.ai_summary)
+        .where(
+            Crash.project_name == project_name,
+            Crash.signature == signature,
             Crash.ai_summary.is_not(None),
             Crash.crash_id != crash_id,
         )
@@ -63,14 +82,18 @@ def summarize_and_tag(crash_id, project_name):
     callers should catch, log, and move on: ai_summary stays NULL, so the
     crash is picked up again on a later cron tick.
 
-    First checks for an exact-content duplicate (see _find_duplicate) and,
-    if found, copies its summary and tags directly - no API call at all."""
-    dump = db.session.execute(
-        select(Crash.dump).where(Crash.crash_id == crash_id)
-    ).scalar_one_or_none()
+    First checks for an exact-content duplicate (see _find_duplicate), then
+    a same-signature duplicate (see _find_signature_duplicate) and, if
+    either is found, copies its summary and tags directly - no API call at
+    all."""
+    dump, signature = db.session.execute(
+        select(Crash.dump, Crash.signature).where(Crash.crash_id == crash_id)
+    ).one_or_none() or (None, None)
 
     if dump:
         duplicate = _find_duplicate(project_name, dump, crash_id)
+        if duplicate is None and signature:
+            duplicate = _find_signature_duplicate(project_name, signature, crash_id)
         if duplicate is not None:
             summary = f"(Same as crash #{duplicate['crash_id']}.) {duplicate['ai_summary']}"
             _copy_tags(duplicate["crash_id"], crash_id)
