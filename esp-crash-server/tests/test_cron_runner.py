@@ -37,6 +37,20 @@ def test_tick_processes_a_real_pending_crash_end_to_end(app, db_conn, monkeypatc
         assert "base panic text" in cur.fetchone()[0]
 
 
+def test_sleep_remaining_is_full_interval_when_last_run_was_instant():
+    assert cron_runner._sleep_remaining(0) == cron_runner.INTERVAL_SECONDS
+
+
+def test_sleep_remaining_shrinks_by_how_long_the_last_run_took():
+    assert cron_runner._sleep_remaining(3) == cron_runner.INTERVAL_SECONDS - 3
+
+
+def test_sleep_remaining_is_zero_not_negative_when_last_run_was_slow():
+    """A tick that alone took longer than the interval must not also incur
+    a full extra sleep on top - the next tick should fire right away."""
+    assert cron_runner._sleep_remaining(cron_runner.INTERVAL_SECONDS + 5) == 0
+
+
 def test_tick_runs_cron_inside_an_app_context(app, monkeypatch):
     from flask import current_app
 
