@@ -61,7 +61,6 @@ endblock %}
                 <th scope="col" class="px-6 py-3">Device Id</th>
                 <th scope="col" class="px-6 py-3">Modules</th>
                 <th scope="col" class="px-6 py-3">Tags</th>
-                <th scope="col" class="px-6 py-3">Related</th>
                 <th scope="col" class="px-6 py-3"></th>
             </tr>
         </thead>
@@ -128,23 +127,19 @@ endblock %}
                     {% endif %}
                 </td>
                 <td class="px-6 py-4">
-                    {% if crash.related_count > 0 %}
-                    <a href="{{ url_for('list_crashes', signature=crash.signature) }}"
-                       class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 hover:bg-sky-200"
-                       title="Other crashes with the same stack signature (no AI involved)">
-                        Related({{ crash.related_count }})
-                    </a>
-                    {% else %}
-                    <span class="text-gray-300">&mdash;</span>
-                    {% endif %}
-                </td>
-                <td class="px-6 py-4">
                     <a href="{{ url_for('delete_crash', project_name=crash.project_name, crash_id=crash.crash_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Delete</a>
                     <a href="{{ url_for('show_device', device_id=crash.device_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Device</a>
                     {% if crash.elf_file_id %}
                     {% for elf_file_id in crash.elf_file_id %}
                     <a href="{{ url_for('show_build', build_id=elf_file_id) }}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">Build</a>
                     {% endfor %}
+                    {% endif %}
+                    {% if crash.related_count > 0 %}
+                    <a href="{{ url_for('list_crashes', signature=crash.signature) }}"
+                       class="font-medium text-blue-600 dark:text-blue-500 hover:underline"
+                       title="Other crashes with the same stack signature (no AI involved)">
+                        Related({{ crash.related_count }})
+                    </a>
                     {% endif %}
                 </td>
             </tr>
