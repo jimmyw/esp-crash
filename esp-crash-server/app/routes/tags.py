@@ -24,8 +24,14 @@ def add_crash_tag(project_name, crash_id):
 
     # A typed new-tag name takes priority over whatever's selected in the
     # existing-tags dropdown, so picking a tag then also typing a new one
-    # does what it looks like it does.
-    tag_name = (request.form.get('new_tag_name') or request.form.get('tag_name') or '').strip()
+    # does what it looks like it does. '__new_tag__' is the "+ New tag..."
+    # option's value (a UI sentinel that reveals the name/description
+    # fields client-side) - it must never be used as an actual tag name if
+    # submitted without new_tag_name filled in.
+    selected_tag = (request.form.get('tag_name') or '').strip()
+    if selected_tag == '__new_tag__':
+        selected_tag = ''
+    tag_name = (request.form.get('new_tag_name') or selected_tag or '').strip()
     if not tag_name:
         return "Missing tag_name", 400
     tag_description = (request.form.get('tag_description') or '').strip() or None

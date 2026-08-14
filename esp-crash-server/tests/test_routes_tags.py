@@ -50,6 +50,41 @@ def test_add_crash_tag_new_tag_name_takes_priority(client, db_conn):
         assert cur.fetchone()[0] == "brand new"
 
 
+def test_add_crash_tag_new_tag_sentinel_uses_typed_name(client, db_conn):
+    """Selecting the "+ New tag..." option submits tag_name=__new_tag__
+    alongside the typed new_tag_name - the sentinel itself must never
+    become the tag name."""
+    helpers.create_project(db_conn, "proj-t1c", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-t1c")
+    crash_id = helpers.create_crash(db_conn, "proj-t1c", "1.0", device_id)
+
+    resp = client.post(
+        f"/projects/proj-t1c/{crash_id}/tags",
+        data={"tag_name": "__new_tag__", "new_tag_name": "Flaky Sensor"},
+    )
+    assert resp.status_code == 302
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT name FROM tag WHERE project_name = %s", ("proj-t1c",))
+        assert cur.fetchone() == ("flaky sensor",)
+
+
+def test_add_crash_tag_new_tag_sentinel_without_typed_name_is_missing(client, db_conn):
+    """The sentinel alone (JS didn't run, or the field was left empty) must
+    be rejected like any other missing tag name, not create a tag
+    literally called "__new_tag__"."""
+    helpers.create_project(db_conn, "proj-t1d", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-t1d")
+    crash_id = helpers.create_crash(db_conn, "proj-t1d", "1.0", device_id)
+
+    resp = client.post(f"/projects/proj-t1d/{crash_id}/tags", data={"tag_name": "__new_tag__"})
+    assert resp.status_code == 400
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM tag WHERE project_name = %s", ("proj-t1d",))
+        assert cur.fetchone()[0] == 0
+
+
 def test_remove_crash_tag(client, db_conn):
     helpers.create_project(db_conn, "proj-t3", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-t3")
@@ -97,6 +132,21 @@ def test_crash_page_tag_picker_is_a_visible_select(client, db_conn):
     assert '<option value="unattached-tag"' in body
     assert "<datalist" not in body
     assert 'name="new_tag_name"' in body
+
+
+def test_crash_page_new_tag_fields_are_hidden_until_new_tag_selected(client, db_conn):
+    """The new-tag name/description inputs must start hidden - they're
+    only meant to appear once "+ New tag..." is picked in the dropdown."""
+    helpers.create_project(db_conn, "proj-t4c", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-t4c")
+    crash_id = helpers.create_crash(db_conn, "proj-t4c", "1.0", device_id)
+
+    resp = client.get(f"/projects/proj-t4c/{crash_id}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert '<option value="__new_tag__">+ New tag' in body
+    assert 'id="new-tag-fields"' in body
+    assert 'style="display:none"' in body
 
 
 def test_list_project_crashes_tag_filter(client, db_conn):

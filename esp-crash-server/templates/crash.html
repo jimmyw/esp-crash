@@ -99,19 +99,38 @@
         </span>
         {% endfor %}
         <form method="post" action="{{ url_for('add_crash_tag', project_name=crash.project_name, crash_id=crash.crash_id) }}" class="flex items-center gap-1">
-            <select name="tag_name" class="p-1 text-sm uppercase border-2 border-gray-300 rounded-md">
+            <select name="tag_name" id="tag-select" class="p-1 text-sm uppercase border-2 border-gray-300 rounded-md">
                 <option value="">Select existing tag&hellip;</option>
                 {% for t in project_tags %}
                 <option value="{{ t.name }}" title="{{ t.description or '' }}">{{ t.name }}</option>
                 {% endfor %}
+                <option value="__new_tag__">+ New tag&hellip;</option>
             </select>
-            <span class="text-xs text-gray-400">or</span>
-            <input type="text" name="new_tag_name" placeholder="New tag name" class="p-1 text-sm border-2 border-gray-300 rounded-md">
-            <input type="text" name="tag_description" placeholder="Description (new tags only)" class="p-1 text-sm border-2 border-gray-300 rounded-md">
+            <span id="new-tag-fields" class="items-center gap-1" style="display:none">
+                <input type="text" name="new_tag_name" placeholder="New tag name" class="p-1 text-sm border-2 border-gray-300 rounded-md">
+                <input type="text" name="tag_description" placeholder="Description" class="p-1 text-sm border-2 border-gray-300 rounded-md">
+            </span>
             <button type="submit" class="p-1 px-2 text-sm bg-blue-500 text-white rounded-md">Add</button>
         </form>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var select = document.getElementById('tag-select');
+    var newTagFields = document.getElementById('new-tag-fields');
+    if (!select || !newTagFields) return;
+    function sync() {
+        var isNewTag = select.value === '__new_tag__';
+        newTagFields.style.display = isNewTag ? 'inline-flex' : 'none';
+        if (!isNewTag) {
+            newTagFields.querySelectorAll('input').forEach(function (input) { input.value = ''; });
+        }
+    }
+    select.addEventListener('change', sync);
+    sync();
+});
+</script>
 
 {% if modules %}
 <div class="w-5/6 mt-4">
