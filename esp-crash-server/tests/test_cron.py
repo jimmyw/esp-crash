@@ -237,10 +237,12 @@ def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch
     assert calls == [(granted_crash, "proj-cron-ai-granted")]
 
 
-def test_cron_ai_summary_excludes_pre_grant_backlog(client, db_conn, monkeypatch, app):
-    """Granting esp-crash-bot access to a project with years of crash
-    history must not trigger a backfill of all of them - only crashes from
-    after the grant (Crash.date > ProjectAuth.date) are eligible."""
+def test_cron_ai_summary_includes_pre_grant_backlog(client, db_conn, monkeypatch, app):
+    """Granting esp-crash-bot access to a project no longer excludes crash
+    history from before the grant - now that a review is written once per
+    (project_name, signature) group rather than per crash, granting access
+    only means reviewing a project's handful of distinct relations, not
+    backfilling every historical crash."""
     from app import decode
     from app.routes import cron
 
@@ -255,13 +257,13 @@ def test_cron_ai_summary_excludes_pre_grant_backlog(client, db_conn, monkeypatch
     device_id = helpers.create_device(db_conn, "dev-cron-ai-backlog")
     helpers.create_elf_file(db_conn, "proj-cron-ai-backlog", "1.0")
 
-    # Already-symbolicated crash from before the grant - must be skipped.
+    # Already-symbolicated crash from before the grant - now eligible too.
     old_crash = helpers.create_crash(
         db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
         dump="old crash, already symbolicated", date=grant_time - timedelta(days=30),
         signature="1" * 64,
     )
-    # New, already-symbolicated crash from after the grant - must be picked up.
+    # New, already-symbolicated crash from after the grant - also eligible.
     new_crash = helpers.create_crash(
         db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
         dump="new crash, already symbolicated", date=grant_time + timedelta(hours=1),
@@ -270,8 +272,7 @@ def test_cron_ai_summary_excludes_pre_grant_backlog(client, db_conn, monkeypatch
 
     resp = client.get("/cron")
     assert resp.status_code == 200
-    assert calls == [new_crash]
-    assert old_crash not in calls
+    assert set(calls) == {old_crash, new_crash}
 
 
 def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, app):

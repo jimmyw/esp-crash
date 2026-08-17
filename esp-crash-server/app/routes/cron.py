@@ -313,11 +313,11 @@ def cron():
     # partially-configured deployment would otherwise retry a doomed API
     # call every tick instead of a clean, informative no-op.
     #
-    # Crash.date > ProjectAuth.date (the grant's own timestamp - already
-    # recorded by create_acl, no new column needed) scopes this to crashes
-    # that happened *after* the bot was granted access, not the project's
-    # entire history - granting access on a project with years of crashes
-    # must not trigger a backfill of all of them.
+    # No longer scoped to crashes after the grant date - now that a review
+    # is written once per (project_name, signature) group rather than per
+    # crash (see app/ai_tagging.py), granting access to a project only
+    # means reviewing its handful of distinct relations, not backfilling
+    # every historical crash.
     service_user = current_app.config.get("MCP_SERVICE_GITHUB_USER")
     ai_configured = bool(
         service_user
@@ -345,7 +345,7 @@ def cron():
                                   & (CrashRelation.signature == Crash.signature))
             .where(
                 Crash.dump.is_not(None), Crash.signature.is_not(None),
-                CrashRelation.ai_summary.is_(None), Crash.date > ProjectAuth.date,
+                CrashRelation.ai_summary.is_(None),
             )
             .distinct(Crash.project_name, Crash.signature)
             .order_by(Crash.project_name, Crash.signature, Crash.date.desc())
