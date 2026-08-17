@@ -131,6 +131,23 @@ def test_list_project_relations_shows_version_alias(client, db_conn):
     assert "<b>stable-release</b>" in body
 
 
+def test_list_project_relations_version_alias_shown_once_per_crash_count(client, db_conn):
+    """Grouping is across every crash sharing a (signature, project_ver) -
+    the alias must appear once in the chip regardless of how many crashes
+    are in that group, not once per crash (a join fan-out bug)."""
+    helpers.create_project(db_conn, "proj-rel5", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-rel5")
+    sig = "1" * 64
+    helpers.create_elf_file(db_conn, "proj-rel5", "1.0", project_alias="stable-release")
+    for _ in range(3):
+        helpers.create_crash(db_conn, "proj-rel5", "1.0", device_id, signature=sig)
+
+    resp = client.get("/projects/proj-rel5/relations")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert body.count("stable-release") == 1
+
+
 def test_list_project_relations_empty(client, db_conn):
     helpers.create_project(db_conn, "proj-rel-empty", github_user="none")
     resp = client.get("/projects/proj-rel-empty/relations")
