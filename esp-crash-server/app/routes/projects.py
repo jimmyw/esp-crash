@@ -210,7 +210,27 @@ def list_project_relations(project_name):
                 {"tag_id": t["tag_id"], "name": t["name"], "description": t["description"]}
             )
 
-    relations = [dict(r, tags=tags_by_signature.get(r["signature"], [])) for r in relations]
+    # Every firmware version the group has been seen on, most recent first, so a
+    # reader can tell an old fixed bug from one still landing on the newest build.
+    # One grouped query for the whole page, batched like the tags above.
+    versions_by_signature = {}
+    if signatures:
+        version_rows = db.session.execute(
+            select(
+                Crash.signature,
+                Crash.project_ver,
+                func.count(func.distinct(Crash.crash_id)).label("crash_count"),
+            )
+            .where(Crash.project_name == project_name, Crash.signature.in_(signatures))
+            .group_by(Crash.signature, Crash.project_ver)
+            .order_by(func.max(Crash.date).desc())
+        ).mappings().all()
+        for v in version_rows:
+            versions_by_signature.setdefault(v["signature"], []).append({"project_ver": v["project_ver"], "crash_count": v["crash_count"]})
+
+    relations = [
+        dict(r, tags=tags_by_signature.get(r["signature"], []), versions=versions_by_signature.get(r["signature"], [])) for r in relations
+    ]
 
     return render_template('relations.html', relations=relations, project_name=project_name, limit=limit, offset=offset, full_count=full_count)
 

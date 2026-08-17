@@ -41,7 +41,7 @@
             <tr>
                 <th scope="col" class="px-6 py-3">Last Seen</th>
                 <th scope="col" class="px-6 py-3">Title</th>
-                <th scope="col" class="px-6 py-3">Tags</th>
+                <th scope="col" class="px-6 py-3">Versions</th>
                 <th scope="col" class="px-6 py-3">Crashes</th>
                 <th scope="col" class="px-6 py-3"></th>
             </tr>
@@ -56,13 +56,22 @@
                     {% else %}
                     <span class="text-gray-300">&mdash;</span>
                     {% endif %}
-                </td>
-                <td class="px-6 py-4">
                     {% if rel.tags %}
-                    <div class="flex flex-wrap gap-1">
+                    <div class="flex flex-wrap gap-1 mt-1">
                         {% for t in rel.tags %}
                         <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase bg-amber-100 text-amber-800" title="{{ t.description or '' }}">
                             {{ t.name }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    {% if rel.versions %}
+                    <div class="flex flex-wrap gap-1">
+                        {% for v in rel.versions %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono whitespace-nowrap bg-slate-100 text-slate-700" title="{{ v.crash_count }} crash{{ '' if v.crash_count == 1 else 'es' }} on {{ v.project_ver }}">
+                            {{ v.project_ver }}
                         </span>
                         {% endfor %}
                     </div>

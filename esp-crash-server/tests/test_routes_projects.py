@@ -97,6 +97,25 @@ def test_list_project_relations_tags_and_link(client, db_conn):
     assert f"/crash?signature={sig}" in body
 
 
+def test_list_project_relations_lists_every_version(client, db_conn):
+    """The Versions column names every build the group has been seen on, newest
+    first, and counts the crashes per build in the chip's tooltip."""
+    helpers.create_project(db_conn, "proj-rel3", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-rel3")
+    sig = "f" * 64
+    helpers.create_crash(db_conn, "proj-rel3", "1.0", device_id, signature=sig, date="2026-01-01 00:00:00")
+    helpers.create_crash(db_conn, "proj-rel3", "1.0", device_id, signature=sig, date="2026-01-02 00:00:00")
+    helpers.create_crash(db_conn, "proj-rel3", "2.0", device_id, signature=sig, date="2026-01-03 00:00:00")
+
+    resp = client.get("/projects/proj-rel3/relations")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert 'title="2 crashes on 1.0"' in body  # per-version count, in the chip tooltip
+    assert 'title="1 crash on 2.0"' in body
+    # Most recently seen version first.
+    assert body.index('title="1 crash on 2.0"') < body.index('title="2 crashes on 1.0"')
+
+
 def test_list_project_relations_empty(client, db_conn):
     helpers.create_project(db_conn, "proj-rel-empty", github_user="none")
     resp = client.get("/projects/proj-rel-empty/relations")
