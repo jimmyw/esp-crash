@@ -33,8 +33,8 @@ def show_project_crash(project_name, crash_id):
             Crash.crash_id, Crash.date, Crash.project_name, Crash.device_id,
             Crash.project_ver, Crash.crash_dmp, Device.ext_device_id,
             func.coalesce(Device.alias, "").label("device_alias"), Crash.dump,
-            ProjectSettings.device_url_template, Crash.module_map, Crash.ai_summary,
-            Crash.signature,
+            ProjectSettings.device_url_template, Crash.module_map, Crash.ai_title,
+            Crash.ai_summary, Crash.signature,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
@@ -108,6 +108,29 @@ def refresh_crash(project_name, crash_id):
             ),
         )
         .values(dump=None)
+    )
+    db.session.commit()
+
+    return redirect(url_for('show_project_crash', project_name=project_name, crash_id=crash_id))
+
+
+@login_required
+def reload_crash_summary(project_name, crash_id):
+    """Clear the stored AI title/summary so the next cron tick regenerates
+    them. Existing tags are left alone - summarize_and_tag never removes a
+    tag, only adds ones that fit."""
+
+    # Same auth pattern as refresh_crash: only clears when a matching
+    # project_auth row exists (an absent grant leaves the row untouched).
+    db.session.execute(
+        update(Crash)
+        .where(
+            Crash.crash_id == crash_id,
+            Crash.project_name.in_(
+                select(ProjectAuth.project_name).where(auth_filter(ProjectAuth.github))
+            ),
+        )
+        .values(ai_title=None, ai_summary=None)
     )
     db.session.commit()
 
@@ -283,5 +306,6 @@ def register(app):
     app.add_url_rule('/crash/<crash_id>', endpoint="show_crash", view_func=show_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>', endpoint="show_project_crash", view_func=show_project_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>/refresh', endpoint="refresh_crash", view_func=refresh_crash)
+    app.add_url_rule('/projects/<project_name>/<crash_id>/reload-summary', endpoint="reload_crash_summary", view_func=reload_crash_summary, methods=['POST'])
     app.add_url_rule('/crash/<crash_id>/download', endpoint="download_crash", view_func=download_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>/delete', endpoint="delete_crash", view_func=delete_crash)

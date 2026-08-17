@@ -72,7 +72,7 @@ def test_list_project_relations_groups_by_signature(client, db_conn):
     device_id = helpers.create_device(db_conn, "dev-rel")
     sig = "d" * 64
     helpers.create_crash(db_conn, "proj-rel", "1.0", device_id, signature=sig, date="2026-01-01 00:00:00")
-    helpers.create_crash(db_conn, "proj-rel", "1.0", device_id, signature=sig, ai_summary="Null pointer in foo()", date="2026-01-02 00:00:00")
+    helpers.create_crash(db_conn, "proj-rel", "1.0", device_id, signature=sig, ai_title="Null pointer in foo()", date="2026-01-02 00:00:00")
     helpers.create_crash(db_conn, "proj-rel", "1.0", device_id)  # no signature - excluded
 
     resp = client.get("/projects/proj-rel/relations")

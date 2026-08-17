@@ -7,12 +7,18 @@ the service-token identity in mcp_app/auth.py. Kept out of cron.py so
 `app.ai_tagging.summarize_and_tag` is a single, stable mock target for tests,
 matching how app.decode is split out for cron's symbolication step.
 """
+import re
+
 from anthropic import Anthropic
 from flask import current_app
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .models import Crash, CrashTag, db
+
+# Matches the "TITLE: ...\nDESCRIPTION: ..." format the prompt below asks
+# the model for. DOTALL so DESCRIPTION can span multiple lines/paragraphs.
+_TITLE_DESCRIPTION_RE = re.compile(r'TITLE:\s*(.+?)\s*\n+DESCRIPTION:\s*(.+)', re.DOTALL)
 
 MCP_BETA = "mcp-client-2025-11-20"
 # Haiku 4.5 over Sonnet 5: this runs on every new crash, and in practice
@@ -34,7 +40,7 @@ def _find_duplicate(project_name, dump, crash_id):
     state makes the symbolicated dump unique even for the same bug; see
     _find_signature_duplicate for that case."""
     return db.session.execute(
-        select(Crash.crash_id, Crash.ai_summary)
+        select(Crash.crash_id, Crash.ai_title, Crash.ai_summary)
         .where(
             Crash.project_name == project_name,
             Crash.dump == dump,
@@ -53,7 +59,7 @@ def _find_signature_duplicate(project_name, signature, crash_id):
     match misses (e.g. a watchdog firing on the same task across many
     devices, where only pointer/register values differ)."""
     return db.session.execute(
-        select(Crash.crash_id, Crash.ai_summary)
+        select(Crash.crash_id, Crash.ai_title, Crash.ai_summary)
         .where(
             Crash.project_name == project_name,
             Crash.signature == signature,
@@ -78,14 +84,18 @@ def _copy_tags(source_crash_id, target_crash_id):
 
 def summarize_and_tag(crash_id, project_name):
     """Ask Claude to summarize this crash and apply appropriate tags via the
-    app's own MCP server, then store the summary. Raises on any failure -
-    callers should catch, log, and move on: ai_summary stays NULL, so the
-    crash is picked up again on a later cron tick.
+    app's own MCP server, then store a short title (ai_title) and a longer
+    description (ai_summary) separately. Raises on any failure - callers
+    should catch, log, and move on: ai_summary stays NULL, so the crash is
+    picked up again on a later cron tick.
 
     First checks for an exact-content duplicate (see _find_duplicate), then
     a same-signature duplicate (see _find_signature_duplicate) and, if
-    either is found, copies its summary and tags directly - no API call at
-    all."""
+    either is found, copies its title/summary and tags directly - no API
+    call at all. The copy is verbatim (no "(Same as crash #N.)" annotation -
+    duplicates are already visible via the signature-grouped Relations
+    view, and annotating here caused annotations to compound across chains
+    of duplicates-of-duplicates). Returns {"title": ..., "summary": ...}."""
     dump, signature = db.session.execute(
         select(Crash.dump, Crash.signature).where(Crash.crash_id == crash_id)
     ).one_or_none() or (None, None)
@@ -95,13 +105,14 @@ def summarize_and_tag(crash_id, project_name):
         if duplicate is None and signature:
             duplicate = _find_signature_duplicate(project_name, signature, crash_id)
         if duplicate is not None:
-            summary = f"(Same as crash #{duplicate['crash_id']}.) {duplicate['ai_summary']}"
+            title = duplicate["ai_title"]
+            summary = duplicate["ai_summary"]
             _copy_tags(duplicate["crash_id"], crash_id)
             db.session.execute(
-                update(Crash).where(Crash.crash_id == crash_id).values(ai_summary=summary)
+                update(Crash).where(Crash.crash_id == crash_id).values(ai_title=title, ai_summary=summary)
             )
             db.session.commit()
-            return summary
+            return {"title": title, "summary": summary}
 
     client = Anthropic(api_key=current_app.config["ANTHROPIC_API_KEY"])
     mcp_url = current_app.config["MCP_PUBLIC_URL"].rstrip("/") + "/mcp"
@@ -127,10 +138,13 @@ def summarize_and_tag(crash_id, project_name):
                 "only create a new tag when nothing existing fits. Do not remove any "
                 "existing tags. Do not narrate your steps or explain what you're about to "
                 "do before or between tool calls - make all the tool calls first, then send "
-                "one final message containing nothing but a short (2-3 sentence) "
-                "plain-English summary of what the crash is and its likely cause. That "
-                "final message is shown as-is to a human reading the crash report, so it "
-                "must not include any preamble, tool narration, or markdown."
+                "one final message with nothing but a title and a description, in exactly "
+                "this format and nothing else (no preamble, no markdown):\n\n"
+                "TITLE: <a short headline, ideally under 60 characters, naming the crash "
+                "site and cause, e.g. \"Core dump in mqtt.c assert\">\n"
+                "DESCRIPTION: <a short (2-3 sentence) plain-English description of what "
+                "the crash is and its likely cause>\n\n"
+                "Both are shown as-is to a human reading the crash report."
             ),
         }],
     )
@@ -146,10 +160,15 @@ def summarize_and_tag(crash_id, project_name):
         if block.type != "text":
             break
         summary_blocks.append(block.text)
-    summary = "\n\n".join(reversed(summary_blocks)).strip()
+    text = "\n\n".join(reversed(summary_blocks)).strip()
+
+    match = _TITLE_DESCRIPTION_RE.search(text)
+    if not match:
+        raise ValueError(f"Model response didn't match the TITLE/DESCRIPTION format: {text!r}")
+    title, summary = match.group(1).strip(), match.group(2).strip()
 
     db.session.execute(
-        update(Crash).where(Crash.crash_id == crash_id).values(ai_summary=summary)
+        update(Crash).where(Crash.crash_id == crash_id).values(ai_title=title, ai_summary=summary)
     )
     db.session.commit()
-    return summary
+    return {"title": title, "summary": summary}

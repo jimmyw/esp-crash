@@ -40,6 +40,9 @@ class Crash(db.Model):
     module_names = db.Column(ARRAY(db.Text))
     module_map = db.Column(JSONB)
     ai_summary = db.Column(db.Text)
+    # Short (~60 char) human-readable headline, e.g. "Core dump in mqtt.c
+    # assert" - generated alongside ai_summary, see app/ai_tagging.py.
+    ai_title = db.Column(db.Text)
     # Non-AI duplicate-grouping fingerprint - see app/crash_signature.py.
     # NULL for crashes not yet backfilled or whose dump has no parseable
     # GDB backtrace.

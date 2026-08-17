@@ -168,11 +168,11 @@ def list_project_relations(project_name):
         .group_by(Crash.signature)
     ).subquery()
 
-    # Representative (most recent) crash per signature, for its ai_summary -
-    # DISTINCT ON needs signature first in ORDER BY; the final sort by
-    # last_seen happens in the outer query below.
+    # Representative (most recent) crash per signature, for its short
+    # ai_title - DISTINCT ON needs signature first in ORDER BY; the final
+    # sort by last_seen happens in the outer query below.
     latest = (
-        select(Crash.signature, Crash.ai_summary)
+        select(Crash.signature, Crash.ai_title)
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
         .where(*conditions)
@@ -183,7 +183,7 @@ def list_project_relations(project_name):
     full_count = db.session.execute(select(func.count()).select_from(agg)).scalar_one()
 
     relations = db.session.execute(
-        select(agg.c.signature, agg.c.crash_count, agg.c.last_seen, latest.c.ai_summary)
+        select(agg.c.signature, agg.c.crash_count, agg.c.last_seen, latest.c.ai_title)
         .select_from(agg)
         .join(latest, latest.c.signature == agg.c.signature)
         .order_by(agg.c.last_seen.desc())

@@ -95,7 +95,7 @@ def list_crashes(github_user, project_name=None, search=None, tag_id=None, signa
     rows = db.session.execute(
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
-            Crash.device_id, Crash.module_names, Crash.ai_summary, Crash.signature,
+            Crash.device_id, Crash.module_names, Crash.ai_title, Crash.ai_summary, Crash.signature,
             Device.ext_device_id, Device.alias,
         )
         .select_from(Crash)
@@ -121,8 +121,8 @@ def get_crash(github_user, crash_id):
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
             Crash.device_id, Device.ext_device_id, Device.alias,
-            Crash.dump, Crash.module_map, Crash.module_names, Crash.ai_summary,
-            Crash.signature,
+            Crash.dump, Crash.module_map, Crash.module_names, Crash.ai_title,
+            Crash.ai_summary, Crash.signature,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)

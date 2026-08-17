@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% block title %}#{{ crash.crash_id }} {{ crash.project_name }}{% endblock %}
+{% block title %}{% if crash.ai_title %}{{ crash.ai_title }} - {% endif %}#{{ crash.crash_id }} {{ crash.project_name }}{% endblock %}
 {% block content %}
 
 <div class="flex">
@@ -82,10 +82,19 @@
     </div>
 </div>
 
+{% if crash.ai_title %}
+<h2 class="w-5/6 mt-4 text-xl font-semibold text-slate-900">{{ crash.ai_title }}</h2>
+{% endif %}
+
 {% if crash.ai_summary %}
 <div class="w-5/6 mt-4 p-4 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-slate-700 italic whitespace-pre-line">
     {{ crash.ai_summary }}
 </div>
+{% if crash.dump %}
+<form action="{{ url_for('reload_crash_summary', project_name=crash.project_name, crash_id=crash.crash_id) }}" method="post" class="w-5/6 mt-1">
+    <button type="submit" class="text-xs text-blue-600 hover:underline" title="Clear the AI title/description so cron regenerates them">Review again</button>
+</form>
+{% endif %}
 {% endif %}
 
 <div class="w-5/6 mt-4">

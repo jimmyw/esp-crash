@@ -40,7 +40,7 @@
         <thead class="text-xs text-gray-700 uppercase bg-gray-50">
             <tr>
                 <th scope="col" class="px-6 py-3">Last Seen</th>
-                <th scope="col" class="px-6 py-3">Description</th>
+                <th scope="col" class="px-6 py-3">Title</th>
                 <th scope="col" class="px-6 py-3">Tags</th>
                 <th scope="col" class="px-6 py-3">Crashes</th>
                 <th scope="col" class="px-6 py-3"></th>
@@ -51,8 +51,8 @@
             <tr class="bg-white border-b hover:bg-gray-50">
                 <td class="px-6 py-4 whitespace-nowrap">{{ rel.last_seen | format_datetime }}</td>
                 <td class="px-6 py-4 max-w-lg">
-                    {% if rel.ai_summary %}
-                    <span class="italic text-slate-700">{{ rel.ai_summary | truncate(160) }}</span>
+                    {% if rel.ai_title %}
+                    <span class="font-medium text-slate-700">{{ rel.ai_title }}</span>
                     {% else %}
                     <span class="text-gray-300">&mdash;</span>
                     {% endif %}

@@ -38,6 +38,35 @@ def test_refresh_crash_clears_dump_and_redirects(client, db_conn):
         assert cur.fetchone()[0] is None
 
 
+def test_reload_crash_summary_clears_title_and_summary_and_redirects(client, db_conn):
+    helpers.create_project(db_conn, "proj-c4b", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c4b")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-c4b", "1.0", device_id, dump="symbolicated text",
+        ai_title="Old title", ai_summary="Old summary",
+    )
+
+    resp = client.post(f"/projects/proj-c4b/{crash_id}/reload-summary")
+    assert resp.status_code == 302
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone() == (None, None)
+
+
+def test_reload_crash_summary_shows_review_again_button_when_summarized(client, db_conn):
+    helpers.create_project(db_conn, "proj-c4c", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c4c")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-c4c", "1.0", device_id, dump="symbolicated text",
+        ai_title="Some title", ai_summary="Some summary",
+    )
+
+    resp = client.get(f"/projects/proj-c4c/{crash_id}")
+    assert resp.status_code == 200
+    assert b"Review again" in resp.data
+
+
 def test_show_project_crash_shows_related_link_when_signature_set(client, db_conn):
     helpers.create_project(db_conn, "proj-c7", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c7")

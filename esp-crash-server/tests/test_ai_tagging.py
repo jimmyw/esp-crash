@@ -1,6 +1,6 @@
 """Tests for app/ai_tagging.py - mocks the anthropic client entirely (no
-real API calls), verifying the request shape and that the returned summary
-text is persisted."""
+real API calls), verifying the request shape and that the returned
+title/summary are persisted."""
 from app import ai_tagging
 
 import helpers
@@ -44,10 +44,15 @@ class _FakeAnthropicClient:
         self.beta = _FakeBeta(response, calls)
 
 
-def test_summarize_and_tag_writes_summary_and_calls_mcp_connector(app, db_conn, monkeypatch):
+def _title_description_text(title, description):
+    return f"TITLE: {title}\nDESCRIPTION: {description}"
+
+
+def test_summarize_and_tag_writes_title_and_summary_and_calls_mcp_connector(app, db_conn, monkeypatch):
     calls = []
-    summary_text = "Stack overflow in task X caused by a large local buffer."
-    fake_response = _FakeResponse(summary_text)
+    title = "Stack overflow in task X"
+    description = "Stack overflow in task X caused by a large local buffer."
+    fake_response = _FakeResponse(_title_description_text(title, description))
     monkeypatch.setattr(
         ai_tagging, "Anthropic",
         lambda api_key=None: _FakeAnthropicClient(fake_response, calls),
@@ -64,7 +69,7 @@ def test_summarize_and_tag_writes_summary_and_calls_mcp_connector(app, db_conn, 
     with app.app_context():
         result = ai_tagging.summarize_and_tag(crash_id, "proj-ai-1")
 
-    assert result == summary_text
+    assert result == {"title": title, "summary": description}
     assert len(calls) == 1
     kwargs = calls[0]
     assert kwargs["model"] == "claude-haiku-4-5"
@@ -75,24 +80,25 @@ def test_summarize_and_tag_writes_summary_and_calls_mcp_connector(app, db_conn, 
     assert str(crash_id) in kwargs["messages"][0]["content"]
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
-        assert cur.fetchone()[0] == summary_text
+        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone() == (title, description)
 
 
 def test_summarize_and_tag_strips_narration_between_tool_calls(app, db_conn, monkeypatch):
     """response.content is the full flattened transcript of the server-side
     tool-use turns - text blocks Claude produced before/between tool calls
     ("I'll start by...", "Now I'll tag this...") must not end up glued onto
-    the stored summary; only the trailing run of text blocks (the final
-    answer) should."""
+    the stored title/summary; only the trailing run of text blocks (the
+    final answer) should."""
     calls = []
-    final_summary = "A division by zero occurred in the WiFi beacon parser."
+    title = "Division by zero in beacon parser"
+    description = "A division by zero occurred in the WiFi beacon parser."
     blocks = [
         _FakeTextBlock("I'll help you analyze the crash. Let me start by getting the details."),
         _FakeToolUseBlock(),
         _FakeTextBlock("Now I'll tag this crash with the appropriate tags."),
         _FakeToolUseBlock(),
-        _FakeTextBlock(final_summary),
+        _FakeTextBlock(_title_description_text(title, description)),
     ]
     fake_response = _FakeResponse(blocks=blocks)
     monkeypatch.setattr(
@@ -111,20 +117,21 @@ def test_summarize_and_tag_strips_narration_between_tool_calls(app, db_conn, mon
     with app.app_context():
         result = ai_tagging.summarize_and_tag(crash_id, "proj-ai-narration")
 
-    assert result == final_summary
-    assert "I'll help you analyze" not in result
-    assert "Now I'll tag this crash" not in result
+    assert result == {"title": title, "summary": description}
+    assert "I'll help you analyze" not in result["summary"]
+    assert "Now I'll tag this crash" not in result["summary"]
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
-        assert cur.fetchone()[0] == final_summary
+        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone() == (title, description)
 
 
 def test_summarize_and_tag_joins_multiple_trailing_text_blocks(app, db_conn, monkeypatch):
     calls = []
     blocks = [
         _FakeToolUseBlock(),
-        _FakeTextBlock("First part."),
+        _FakeTextBlock("TITLE: Foo bar crash\n"),
+        _FakeTextBlock("DESCRIPTION: First part."),
         _FakeTextBlock("Second part."),
     ]
     fake_response = _FakeResponse(blocks=blocks)
@@ -144,7 +151,37 @@ def test_summarize_and_tag_joins_multiple_trailing_text_blocks(app, db_conn, mon
     with app.app_context():
         result = ai_tagging.summarize_and_tag(crash_id, "proj-ai-multi-text")
 
-    assert result == "First part.\n\nSecond part."
+    assert result == {"title": "Foo bar crash", "summary": "First part.\n\nSecond part."}
+
+
+def test_summarize_and_tag_raises_on_unparseable_format(app, db_conn, monkeypatch):
+    """If the model doesn't follow the TITLE:/DESCRIPTION: format, raise
+    rather than store garbage - ai_summary stays NULL so cron retries it."""
+    calls = []
+    fake_response = _FakeResponse("Just a plain sentence with no format at all.")
+    monkeypatch.setattr(
+        ai_tagging, "Anthropic",
+        lambda api_key=None: _FakeAnthropicClient(fake_response, calls),
+    )
+
+    helpers.create_project(db_conn, "proj-ai-badformat", github_user="alice")
+    device_id = helpers.create_device(db_conn, "dev-ai-badformat")
+    crash_id = helpers.create_crash(db_conn, "proj-ai-badformat", "1.0", device_id, dump="symbolicated text")
+
+    app.config["ANTHROPIC_API_KEY"] = "sk-test"
+    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
+    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
+
+    with app.app_context():
+        try:
+            ai_tagging.summarize_and_tag(crash_id, "proj-ai-badformat")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone() == (None, None)
 
 
 def test_summarize_and_tag_reuses_exact_duplicate_without_calling_api(app, db_conn, monkeypatch):
@@ -161,7 +198,7 @@ def test_summarize_and_tag_reuses_exact_duplicate_without_calling_api(app, db_co
 
     source_id = helpers.create_crash(
         db_conn, "proj-ai-dup", "1.0", device_id,
-        dump=same_dump, ai_summary="Watchdog fired in ota_manifest task.",
+        dump=same_dump, ai_title="Watchdog fired", ai_summary="Watchdog fired in ota_manifest task.",
     )
     tag_id = helpers.create_tag(db_conn, "proj-ai-dup", "watchdog")
     helpers.tag_crash(db_conn, source_id, tag_id)
@@ -176,12 +213,13 @@ def test_summarize_and_tag_reuses_exact_duplicate_without_calling_api(app, db_co
         result = ai_tagging.summarize_and_tag(new_id, "proj-ai-dup")
 
     assert calls == []
-    assert str(source_id) in result
-    assert "Watchdog fired in ota_manifest task." in result
+    # Copied verbatim - no "(Same as crash #N.)" annotation, which would
+    # otherwise compound across chains of duplicates-of-duplicates.
+    assert result == {"title": "Watchdog fired", "summary": "Watchdog fired in ota_manifest task."}
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_summary FROM crash WHERE crash_id = %s", (new_id,))
-        assert "Watchdog fired in ota_manifest task." in cur.fetchone()[0]
+        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (new_id,))
+        assert cur.fetchone() == ("Watchdog fired", "Watchdog fired in ota_manifest task.")
         cur.execute(
             "SELECT t.name FROM tag t JOIN crash_tag ct ON ct.tag_id = t.tag_id WHERE ct.crash_id = %s",
             (new_id,),
@@ -207,7 +245,7 @@ def test_summarize_and_tag_reuses_signature_duplicate_without_calling_api(app, d
     source_id = helpers.create_crash(
         db_conn, "proj-ai-sig", "1.0", device_id,
         dump="device A's dump, addr 0x1111", signature=shared_signature,
-        ai_summary="Watchdog fired in ota_manifest task.",
+        ai_title="Watchdog fired", ai_summary="Watchdog fired in ota_manifest task.",
     )
     tag_id = helpers.create_tag(db_conn, "proj-ai-sig", "watchdog")
     helpers.tag_crash(db_conn, source_id, tag_id)
@@ -225,8 +263,7 @@ def test_summarize_and_tag_reuses_signature_duplicate_without_calling_api(app, d
         result = ai_tagging.summarize_and_tag(new_id, "proj-ai-sig")
 
     assert calls == []
-    assert str(source_id) in result
-    assert "Watchdog fired in ota_manifest task." in result
+    assert result == {"title": "Watchdog fired", "summary": "Watchdog fired in ota_manifest task."}
 
     with db_conn.cursor() as cur:
         cur.execute(
@@ -241,8 +278,9 @@ def test_summarize_and_tag_ignores_duplicates_from_other_projects(app, db_conn, 
     duplicate - tags are project-scoped and coincidental content matches
     across unrelated projects shouldn't short-circuit real analysis."""
     calls = []
-    summary_text = "Fresh analysis, no duplicate found."
-    fake_response = _FakeResponse(summary_text)
+    title = "Fresh analysis"
+    description = "Fresh analysis, no duplicate found."
+    fake_response = _FakeResponse(_title_description_text(title, description))
     monkeypatch.setattr(
         ai_tagging, "Anthropic",
         lambda api_key=None: _FakeAnthropicClient(fake_response, calls),
@@ -253,7 +291,7 @@ def test_summarize_and_tag_ignores_duplicates_from_other_projects(app, db_conn, 
     device_a = helpers.create_device(db_conn, "dev-ai-other-a")
     helpers.create_crash(
         db_conn, "proj-ai-other-a", "1.0", device_a,
-        dump=same_dump, ai_summary="Summary from a different project.",
+        dump=same_dump, ai_title="Other project title", ai_summary="Summary from a different project.",
     )
 
     helpers.create_project(db_conn, "proj-ai-other-b", github_user="alice")
@@ -268,4 +306,4 @@ def test_summarize_and_tag_ignores_duplicates_from_other_projects(app, db_conn, 
         result = ai_tagging.summarize_and_tag(new_id, "proj-ai-other-b")
 
     assert len(calls) == 1
-    assert result == summary_text
+    assert result == {"title": title, "summary": description}
