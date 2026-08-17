@@ -142,6 +142,82 @@ def list_crashes():
 
 
 @login_required
+def list_project_relations(project_name):
+    """List unique crash "relations" for a project - one row per non-AI
+    stack-fingerprint signature (see app/crash_signature.py), most recently
+    seen first. A de-duplicated companion to list_project_crashes: instead
+    of one row per crash, groups crashes that are likely the same bug."""
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 50))
+
+    conditions = [
+        auth_filter(ProjectAuth.github),
+        Crash.project_name == project_name,
+        Crash.signature.isnot(None),
+    ]
+
+    agg = (
+        select(
+            Crash.signature,
+            func.count(func.distinct(Crash.crash_id)).label("crash_count"),
+            func.max(Crash.date).label("last_seen"),
+        )
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .where(*conditions)
+        .group_by(Crash.signature)
+    ).subquery()
+
+    # Representative (most recent) crash per signature, for its ai_summary -
+    # DISTINCT ON needs signature first in ORDER BY; the final sort by
+    # last_seen happens in the outer query below.
+    latest = (
+        select(Crash.signature, Crash.ai_summary)
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .where(*conditions)
+        .distinct(Crash.signature)
+        .order_by(Crash.signature, Crash.date.desc())
+    ).subquery()
+
+    full_count = db.session.execute(select(func.count()).select_from(agg)).scalar_one()
+
+    relations = db.session.execute(
+        select(agg.c.signature, agg.c.crash_count, agg.c.last_seen, latest.c.ai_summary)
+        .select_from(agg)
+        .join(latest, latest.c.signature == agg.c.signature)
+        .order_by(agg.c.last_seen.desc())
+        .limit(limit)
+        .offset(offset)
+    ).mappings().all()
+
+    # Tags aggregated across every crash sharing a signature - batched the
+    # same way as the per-crash tags in list_project_crashes above. DISTINCT
+    # collapses to one row per (signature, tag) since tag_id determines
+    # name/description.
+    signatures = [r["signature"] for r in relations]
+    tags_by_signature = {}
+    if signatures:
+        tag_rows = db.session.execute(
+            select(Crash.signature, Tag.tag_id, Tag.name, Tag.description)
+            .distinct()
+            .select_from(Crash)
+            .join(CrashTag, CrashTag.crash_id == Crash.crash_id)
+            .join(Tag, Tag.tag_id == CrashTag.tag_id)
+            .where(Crash.project_name == project_name, Crash.signature.in_(signatures))
+            .order_by(Tag.name)
+        ).mappings().all()
+        for t in tag_rows:
+            tags_by_signature.setdefault(t["signature"], []).append(
+                {"tag_id": t["tag_id"], "name": t["name"], "description": t["description"]}
+            )
+
+    relations = [dict(r, tags=tags_by_signature.get(r["signature"], [])) for r in relations]
+
+    return render_template('relations.html', relations=relations, project_name=project_name, limit=limit, offset=offset, full_count=full_count)
+
+
+@login_required
 def create_project():
     """Create a new project for the authenticated user."""
 
@@ -385,6 +461,7 @@ def register(app):
     app.add_url_rule('/crash', endpoint="list_crashes", view_func=list_crashes)
     app.add_url_rule('/projects/create', endpoint="create_project", view_func=create_project, methods=['POST'])
     app.add_url_rule('/projects/<project_name>/builds', endpoint="list_builds", view_func=list_builds)
+    app.add_url_rule('/projects/<project_name>/relations', endpoint="list_project_relations", view_func=list_project_relations)
     app.add_url_rule('/projects/<project_name>/acl', endpoint="list_acl", view_func=list_acl)
     app.add_url_rule('/projects/<project_name>/acl/create', endpoint="create_acl", view_func=create_acl, methods=['POST'])
     app.add_url_rule('/projects/<project_name>/acl/delete/<github>', endpoint="delete_acl", view_func=delete_acl)

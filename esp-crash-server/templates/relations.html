@@ -1,0 +1,103 @@
+{% extends "layout.html" %}
+{% block title %}{{project_name}} relations{% endblock %}
+{% block content %}
+<div class="flex">
+    <h1 class="mb-3 text-3xl leading-none text-slate-900 w-3/6">
+        Unique crash relations for <b>{{project_name}}</b>
+    </h1>
+
+    <a href="{{ url_for('list_project_crashes', project_name=project_name) }}" class="flex items-center p-4">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <span>Crashes</span>
+    </a>
+
+    <a href="{{ url_for('list_builds', project_name=project_name) }}" class="flex items-center p-4">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
+        </svg>
+        <span>Builds</span>
+    </a>
+
+    <a href="{{ url_for('project_settings', project_name=project_name) }}" class="flex items-center p-4">
+        <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+        </svg> <span>Settings</span>
+    </a>
+</div>
+
+<div class="w-5/6 mb-2 text-sm text-gray-600">
+    Crashes grouped by stack fingerprint (no AI involved) - see <a href="{{ url_for('list_project_crashes', project_name=project_name) }}" class="text-blue-600 hover:underline">Crashes</a> for the full, ungrouped list.
+</div>
+
+<div class="w-5/6 relative overflow-x-auto shadow-md sm:rounded-lg">
+    <table class="w-full text-sm text-left text-gray-500">
+        <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+            <tr>
+                <th scope="col" class="px-6 py-3">Last Seen</th>
+                <th scope="col" class="px-6 py-3">Description</th>
+                <th scope="col" class="px-6 py-3">Tags</th>
+                <th scope="col" class="px-6 py-3">Crashes</th>
+                <th scope="col" class="px-6 py-3"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rel in relations %}
+            <tr class="bg-white border-b hover:bg-gray-50">
+                <td class="px-6 py-4 whitespace-nowrap">{{ rel.last_seen | format_datetime }}</td>
+                <td class="px-6 py-4 max-w-lg">
+                    {% if rel.ai_summary %}
+                    <span class="italic text-slate-700">{{ rel.ai_summary | truncate(160) }}</span>
+                    {% else %}
+                    <span class="text-gray-300">&mdash;</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    {% if rel.tags %}
+                    <div class="flex flex-wrap gap-1">
+                        {% for t in rel.tags %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase bg-amber-100 text-amber-800" title="{{ t.description or '' }}">
+                            {{ t.name }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <span class="text-gray-300">&mdash;</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">{{ rel.crash_count }}</td>
+                <td class="px-6 py-4">
+                    <a href="{{ url_for('list_crashes', signature=rel.signature) }}"
+                       class="font-medium text-blue-600 dark:text-blue-500 hover:underline"
+                       title="{{ rel.signature }}">
+                        View crashes
+                    </a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="w-full text-sm text-left text-gray-500 text-center" style="margin: 50px 0px;">
+        <h2>
+            {% if offset > 0 %}
+            <a href="{{ url_for(request.endpoint, project_name=project_name, limit=limit, offset=offset - limit) }}" class="p-2 bg-blue-500 text-white rounded-md">
+                Previous
+            </a>
+            {% endif %}
+            &nbsp; Page {{ (offset // limit) + 1 }} of {{ (full_count // limit) + (1 if full_count % limit > 0 else 0) }} &nbsp;
+            {% if offset + limit < full_count %}
+            <a href="{{ url_for(request.endpoint, project_name=project_name, limit=limit, offset=offset + limit) }}" class="p-2 bg-blue-500 text-white rounded-md">
+                Next
+            </a>
+            {% endif %}
+        </h2>
+    </div>
+
+</div>
+{% endblock %}

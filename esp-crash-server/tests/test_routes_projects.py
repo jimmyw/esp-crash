@@ -67,6 +67,42 @@ def test_list_project_crashes_search_filters(client, db_conn):
     assert b"dev-2" not in resp.data
 
 
+def test_list_project_relations_groups_by_signature(client, db_conn):
+    helpers.create_project(db_conn, "proj-rel", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-rel")
+    sig = "d" * 64
+    helpers.create_crash(db_conn, "proj-rel", "1.0", device_id, signature=sig, date="2026-01-01 00:00:00")
+    helpers.create_crash(db_conn, "proj-rel", "1.0", device_id, signature=sig, ai_summary="Null pointer in foo()", date="2026-01-02 00:00:00")
+    helpers.create_crash(db_conn, "proj-rel", "1.0", device_id)  # no signature - excluded
+
+    resp = client.get("/projects/proj-rel/relations")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "Null pointer in foo()" in body
+    assert ">2<" in body  # crash_count
+
+
+def test_list_project_relations_tags_and_link(client, db_conn):
+    helpers.create_project(db_conn, "proj-rel2", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-rel2")
+    sig = "e" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-rel2", "1.0", device_id, signature=sig)
+    tag_id = helpers.create_tag(db_conn, "proj-rel2", "watchdog")
+    helpers.tag_crash(db_conn, crash_id, tag_id)
+
+    resp = client.get("/projects/proj-rel2/relations")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "watchdog" in body
+    assert f"/crash?signature={sig}" in body
+
+
+def test_list_project_relations_empty(client, db_conn):
+    helpers.create_project(db_conn, "proj-rel-empty", github_user="none")
+    resp = client.get("/projects/proj-rel-empty/relations")
+    assert resp.status_code == 200
+
+
 def test_list_crashes_all_projects(client, db_conn):
     helpers.create_project(db_conn, "proj-all", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-3")
