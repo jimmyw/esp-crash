@@ -72,6 +72,9 @@
                         {% for v in rel.versions %}
                         <a href="{{ url_for('list_builds', project_name=project_name) }}" class="no-underline">
                             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono whitespace-nowrap bg-slate-100 text-slate-700" title="{{ v.crash_count }} crash{{ '' if v.crash_count == 1 else 'es' }} on {{ v.project_ver }}">
+                                {% for project_alias in v.project_alias %}
+                                    {% if project_alias %}<b>{{ project_alias }}</b>&nbsp;{% endif %}
+                                {% endfor %}
                                 {{ v.project_ver }}
                             </span>
                         </a>

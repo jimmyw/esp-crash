@@ -116,6 +116,21 @@ def test_list_project_relations_lists_every_version(client, db_conn):
     assert body.index('title="1 crash on 2.0"') < body.index('title="2 crashes on 1.0"')
 
 
+def test_list_project_relations_shows_version_alias(client, db_conn):
+    """A build's alias, when set, is shown alongside the raw version in the
+    Versions column - same as the crash list."""
+    helpers.create_project(db_conn, "proj-rel4", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-rel4")
+    sig = "0" * 64
+    helpers.create_crash(db_conn, "proj-rel4", "1.0", device_id, signature=sig)
+    helpers.create_elf_file(db_conn, "proj-rel4", "1.0", project_alias="stable-release")
+
+    resp = client.get("/projects/proj-rel4/relations")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "<b>stable-release</b>" in body
+
+
 def test_list_project_relations_empty(client, db_conn):
     helpers.create_project(db_conn, "proj-rel-empty", github_user="none")
     resp = client.get("/projects/proj-rel-empty/relations")

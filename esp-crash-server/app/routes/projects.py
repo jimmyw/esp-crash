@@ -220,13 +220,21 @@ def list_project_relations(project_name):
                 Crash.signature,
                 Crash.project_ver,
                 func.count(func.distinct(Crash.crash_id)).label("crash_count"),
+                # Same array_agg-of-ElfFile.project_alias idiom as the
+                # crash list (list_project_crashes above / project.html) -
+                # a build alias, when set, shown alongside the raw version.
+                func.array_agg(ElfFile.project_alias).label("project_alias"),
             )
+            .select_from(Crash)
+            .outerjoin(ElfFile, (Crash.project_name == ElfFile.project_name) & (Crash.project_ver == ElfFile.project_ver))
             .where(Crash.project_name == project_name, Crash.signature.in_(signatures))
             .group_by(Crash.signature, Crash.project_ver)
             .order_by(func.max(Crash.date).desc())
         ).mappings().all()
         for v in version_rows:
-            versions_by_signature.setdefault(v["signature"], []).append({"project_ver": v["project_ver"], "crash_count": v["crash_count"]})
+            versions_by_signature.setdefault(v["signature"], []).append({
+                "project_ver": v["project_ver"], "crash_count": v["crash_count"], "project_alias": v["project_alias"],
+            })
 
     relations = [
         dict(r, tags=tags_by_signature.get(r["signature"], []), versions=versions_by_signature.get(r["signature"], [])) for r in relations
