@@ -79,6 +79,32 @@ def test_cron_computes_signature_on_symbolication(client, db_conn, monkeypatch):
         assert len(signature) == 64
 
 
+def test_cron_creates_relation_when_signature_first_assigned(client, db_conn, monkeypatch):
+    """crash.signature has an FK to crash_relation - the relation row must
+    exist before (or in the same transaction as) the crash is given that
+    signature."""
+    from app import decode
+
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-sig-relation")
+    helpers.create_elf_file(db_conn, "proj-cron-sig-relation", "1.0")
+    crash_id = helpers.create_crash(db_conn, "proj-cron-sig-relation", "1.0", device_id, crash_dmp=b"raw-dump")
+
+    resp = client.get("/cron")
+    assert resp.status_code == 200
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT signature FROM crash WHERE crash_id = %s", (crash_id,))
+        signature = cur.fetchone()[0]
+        assert signature is not None
+        cur.execute(
+            "SELECT COUNT(*) FROM crash_relation WHERE project_name = %s AND signature = %s",
+            ("proj-cron-sig-relation", signature),
+        )
+        assert cur.fetchone()[0] == 1
+
+
 def test_cron_backfills_signature_for_already_symbolicated_crashes(client, db_conn, monkeypatch):
     from app import decode
 
@@ -188,7 +214,11 @@ def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch
     from app import decode
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    # AI-review selection now requires a signature - use the fake resolver
+    # that produces a parseable stack, so cron's own symbolication pass
+    # (which runs before the AI pass, same request) computes one and
+    # creates the crash_relation row for it.
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
     calls = []
     monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append((crash_id, project_name)))
     _configure_ai(app)
@@ -229,11 +259,13 @@ def test_cron_ai_summary_excludes_pre_grant_backlog(client, db_conn, monkeypatch
     old_crash = helpers.create_crash(
         db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
         dump="old crash, already symbolicated", date=grant_time - timedelta(days=30),
+        signature="1" * 64,
     )
     # New, already-symbolicated crash from after the grant - must be picked up.
     new_crash = helpers.create_crash(
         db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
         dump="new crash, already symbolicated", date=grant_time + timedelta(hours=1),
+        signature="2" * 64,
     )
 
     resp = client.get("/cron")
@@ -256,7 +288,8 @@ def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, 
     helpers.create_elf_file(db_conn, "proj-cron-ai-done", "1.0")
     helpers.create_crash(
         db_conn, "proj-cron-ai-done", "1.0", device_id,
-        dump="already symbolicated", ai_summary="already summarized",
+        dump="already symbolicated", signature="3" * 64,
+        ai_title="already summarized", ai_summary="already summarized",
     )
 
     resp = client.get("/cron")
@@ -268,7 +301,7 @@ def test_cron_ai_summary_failure_is_logged_and_skipped(client, db_conn, monkeypa
     from app import decode
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
 
     def failing_summarize(crash_id, project_name):
         raise RuntimeError("boom")
@@ -286,7 +319,10 @@ def test_cron_ai_summary_failure_is_logged_and_skipped(client, db_conn, monkeypa
     assert resp.data == b"OK\n"
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        cur.execute(
+            "SELECT ai_summary FROM crash_relation WHERE project_name = %s",
+            ("proj-cron-ai-fail",),
+        )
         assert cur.fetchone()[0] is None
 
 

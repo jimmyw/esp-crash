@@ -13,10 +13,10 @@ provide one.
 """
 import datetime
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, insert, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.models import Crash, CrashTag, Device, ElfFile, ProjectAuth, Tag, db
+from app.models import Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ProjectAuth, Tag, db
 from app.tags import find_or_create_tag
 
 
@@ -29,13 +29,19 @@ def _projects_of(github_user):
 def _tags_by_crash(crash_ids):
     """Batched fetch of {crash_id: [tag dicts]} for the given crash_ids -
     avoids one query per crash (same idiom as the `builds` attachment in
-    get_crash below)."""
+    get_crash below). Tags live on the crash's relation
+    (project_name, signature) - see app/models.py - so this joins Crash to
+    CrashRelationTag on that tuple; a crash with signature IS NULL simply
+    has no rows here."""
     if not crash_ids:
         return {}
     rows = db.session.execute(
-        select(CrashTag.crash_id, Tag.tag_id, Tag.name, Tag.description)
-        .join(Tag, CrashTag.tag_id == Tag.tag_id)
-        .where(CrashTag.crash_id.in_(crash_ids))
+        select(Crash.crash_id, Tag.tag_id, Tag.name, Tag.description)
+        .select_from(Crash)
+        .join(CrashRelationTag, (CrashRelationTag.project_name == Crash.project_name)
+                                 & (CrashRelationTag.signature == Crash.signature))
+        .join(Tag, Tag.tag_id == CrashRelationTag.tag_id)
+        .where(Crash.crash_id.in_(crash_ids))
     ).mappings().all()
     out = {}
     for r in rows:
@@ -89,18 +95,25 @@ def list_crashes(github_user, project_name=None, search=None, tag_id=None, signa
     if search:
         conditions.append(Crash.textsearch.op("@@")(func.plainto_tsquery(search)))
     if tag_id:
-        conditions.append(Crash.crash_id.in_(select(CrashTag.crash_id).where(CrashTag.tag_id == tag_id)))
+        conditions.append(
+            tuple_(Crash.project_name, Crash.signature).in_(
+                select(CrashRelationTag.project_name, CrashRelationTag.signature)
+                .where(CrashRelationTag.tag_id == tag_id)
+            )
+        )
     if signature:
         conditions.append(Crash.signature == signature)
     rows = db.session.execute(
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
-            Crash.device_id, Crash.module_names, Crash.ai_title, Crash.ai_summary, Crash.signature,
+            Crash.device_id, Crash.module_names, CrashRelation.ai_title,
+            CrashRelation.ai_summary, Crash.signature,
             Device.ext_device_id, Device.alias,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
         .outerjoin(Device, Crash.device_id == Device.device_id)
+        .outerjoin(CrashRelation, (CrashRelation.project_name == Crash.project_name) & (CrashRelation.signature == Crash.signature))
         .where(*conditions)
         .order_by(Crash.date.desc(), Crash.crash_id)
         .limit(int(limit))
@@ -121,12 +134,13 @@ def get_crash(github_user, crash_id):
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver,
             Crash.device_id, Device.ext_device_id, Device.alias,
-            Crash.dump, Crash.module_map, Crash.module_names, Crash.ai_title,
-            Crash.ai_summary, Crash.signature,
+            Crash.dump, Crash.module_map, Crash.module_names, CrashRelation.ai_title,
+            CrashRelation.ai_summary, Crash.signature,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
         .join(Device, Crash.device_id == Device.device_id)
+        .outerjoin(CrashRelation, (CrashRelation.project_name == Crash.project_name) & (CrashRelation.signature == Crash.signature))
         .where(Crash.crash_id == crash_id, ProjectAuth.github == github_user)
     ).mappings().first()
     if row is None:
@@ -245,19 +259,25 @@ def create_project(github_user, project_name):
 
 def add_tag_to_crash(github_user, crash_id, tag_name, tag_description=None):
     """Attach a tag to a crash the caller can access, creating the tag for
-    that project if tag_name isn't already one of its tags (case-folded)."""
-    crash_project = db.session.execute(
-        select(Crash.project_name).where(
+    that project if tag_name isn't already one of its tags (case-folded).
+    Tags are owned by the crash's relation (project_name, signature) - see
+    app/models.py - so this affects every crash sharing that signature, not
+    just crash_id. A crash with no signature has no relation to tag."""
+    crash_row = db.session.execute(
+        select(Crash.project_name, Crash.signature).where(
             Crash.crash_id == crash_id, Crash.project_name.in_(_projects_of(github_user))
         )
-    ).scalar_one_or_none()
-    if crash_project is None:
+    ).mappings().first()
+    if crash_row is None:
         return {"crash_id": crash_id, "added": False, "reason": "not found or forbidden"}
+    if crash_row["signature"] is None:
+        return {"crash_id": crash_id, "added": False, "reason": "crash has no signature"}
 
-    tag_id = find_or_create_tag(crash_project, tag_name, tag_description)
+    tag_id = find_or_create_tag(crash_row["project_name"], tag_name, tag_description)
     db.session.execute(
-        pg_insert(CrashTag).values(crash_id=crash_id, tag_id=tag_id)
-        .on_conflict_do_nothing(index_elements=["crash_id", "tag_id"])
+        pg_insert(CrashRelationTag)
+        .values(project_name=crash_row["project_name"], signature=crash_row["signature"], tag_id=tag_id)
+        .on_conflict_do_nothing(index_elements=["project_name", "signature", "tag_id"])
     )
     db.session.commit()
     tag_row = db.session.execute(
@@ -268,12 +288,21 @@ def add_tag_to_crash(github_user, crash_id, tag_name, tag_description=None):
 
 def remove_tag_from_crash(github_user, crash_id, tag_id):
     """Detach a tag from a crash the caller can access (the tag itself is
-    left intact for reuse). removed=False if not found/forbidden."""
+    left intact for reuse) - affects every crash sharing this signature.
+    removed=False if not found/forbidden or the crash has no signature."""
+    crash_row = db.session.execute(
+        select(Crash.project_name, Crash.signature).where(
+            Crash.crash_id == crash_id, Crash.project_name.in_(_projects_of(github_user))
+        )
+    ).mappings().first()
+    if crash_row is None or crash_row["signature"] is None:
+        return {"crash_id": crash_id, "tag_id": tag_id, "removed": False}
+
     res = db.session.execute(
-        delete(CrashTag).where(
-            CrashTag.crash_id == crash_id,
-            CrashTag.tag_id == tag_id,
-            CrashTag.crash_id.in_(select(Crash.crash_id).where(Crash.project_name.in_(_projects_of(github_user)))),
+        delete(CrashRelationTag).where(
+            CrashRelationTag.project_name == crash_row["project_name"],
+            CrashRelationTag.signature == crash_row["signature"],
+            CrashRelationTag.tag_id == tag_id,
         )
     )
     db.session.commit()

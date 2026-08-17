@@ -26,13 +26,42 @@ def create_device(db_conn, ext_device_id, alias=None):
 
 
 def create_crash(db_conn, project_name, project_ver, device_id, crash_dmp=b"raw-dump-bytes", dump=None, ai_summary=None, ai_title=None, date=None, signature=None, module_names=None):
+    """ai_title/ai_summary live on crash_relation (project_name, signature)
+    now, not on crash - kept as kwargs here for call-site compatibility,
+    but they require signature to also be given (there's nowhere to put
+    them otherwise), and upsert into crash_relation rather than crash.
+    crash.signature has an FK to crash_relation, so the relation row is
+    created first when signature is given."""
+    if signature is None and (ai_title is not None or ai_summary is not None):
+        raise ValueError("create_crash(...): ai_title/ai_summary require signature=... (they live on crash_relation)")
     with db_conn.cursor() as cur:
+        if signature is not None:
+            cur.execute(
+                "INSERT INTO crash_relation (project_name, signature) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (project_name, signature),
+            )
+            if ai_title is not None or ai_summary is not None:
+                cur.execute(
+                    """UPDATE crash_relation SET ai_title = COALESCE(%s, ai_title), ai_summary = COALESCE(%s, ai_summary)
+                       WHERE project_name = %s AND signature = %s""",
+                    (ai_title, ai_summary, project_name, signature),
+                )
         cur.execute(
-            """INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id, dump, ai_summary, ai_title, signature, module_names)
-               VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING crash_id""",
-            (date, project_name, project_ver, psycopg2.Binary(crash_dmp), device_id, dump, ai_summary, ai_title, signature, module_names),
+            """INSERT INTO crash (date, project_name, project_ver, crash_dmp, device_id, dump, signature, module_names)
+               VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s) RETURNING crash_id""",
+            (date, project_name, project_ver, psycopg2.Binary(crash_dmp), device_id, dump, signature, module_names),
         )
         return cur.fetchone()[0]
+
+
+def create_relation(db_conn, project_name, signature, ai_title=None, ai_summary=None):
+    """A crash_relation row with no crash attached to it, for tests that
+    want to exercise relation-level behavior directly."""
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO crash_relation (project_name, signature, ai_title, ai_summary) VALUES (%s, %s, %s, %s)",
+            (project_name, signature, ai_title, ai_summary),
+        )
 
 
 def create_elf_file(db_conn, project_name, project_ver, elf_bytes=b"raw-elf-bytes", project_alias=None):
@@ -65,10 +94,17 @@ def create_tag(db_conn, project_name, name, description=None):
 
 
 def tag_crash(db_conn, crash_id, tag_id):
+    """Tags live on crash_relation now - resolves crash_id to its
+    (project_name, signature) first. Raises if the crash has no signature
+    (no relation exists to tag)."""
     with db_conn.cursor() as cur:
+        cur.execute("SELECT project_name, signature FROM crash WHERE crash_id = %s", (crash_id,))
+        project_name, signature = cur.fetchone()
+        if signature is None:
+            raise ValueError(f"tag_crash: crash {crash_id} has no signature - can't be tagged")
         cur.execute(
-            "INSERT INTO crash_tag (crash_id, tag_id) VALUES (%s, %s)",
-            (crash_id, tag_id),
+            "INSERT INTO crash_relation_tag (project_name, signature, tag_id) VALUES (%s, %s, %s)",
+            (project_name, signature, tag_id),
         )
 
 

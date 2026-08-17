@@ -11,10 +11,9 @@ import re
 
 from anthropic import Anthropic
 from flask import current_app
-from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import func, select, update
 
-from .models import Crash, CrashTag, db
+from .models import Crash, CrashRelation, db
 
 # Matches the "TITLE: ...\nDESCRIPTION: ..." format the prompt below asks
 # the model for. DOTALL so DESCRIPTION can span multiple lines/paragraphs.
@@ -29,90 +28,42 @@ MCP_BETA = "mcp-client-2025-11-20"
 MODEL = "claude-haiku-4-5"
 
 
-def _find_duplicate(project_name, dump, crash_id):
-    """Most recent other already-summarized crash in the same project whose
-    symbolicated output is byte-identical to this one's, if any. Matches on
-    Crash.dump (what the AI actually reads and what's shown on the crash
-    page) rather than the raw crash_dmp blob - it's the field that
-    determines the summary/tags, and it's deterministic for a true repeat
-    (e.g. a retried upload, or a device re-crashing in identical state).
-    Does NOT catch "same root cause, different device" - device-specific
-    state makes the symbolicated dump unique even for the same bug; see
-    _find_signature_duplicate for that case."""
-    return db.session.execute(
-        select(Crash.crash_id, Crash.ai_title, Crash.ai_summary)
-        .where(
-            Crash.project_name == project_name,
-            Crash.dump == dump,
-            Crash.ai_summary.is_not(None),
-            Crash.crash_id != crash_id,
-        )
-        .order_by(Crash.date.desc())
-        .limit(1)
-    ).mappings().first()
-
-
-def _find_signature_duplicate(project_name, signature, crash_id):
-    """Most recent other already-summarized crash in the same project with
-    the same non-AI crash_signature.py fingerprint - catches "same root
-    cause, different device" duplicates that _find_duplicate's exact-dump
-    match misses (e.g. a watchdog firing on the same task across many
-    devices, where only pointer/register values differ)."""
-    return db.session.execute(
-        select(Crash.crash_id, Crash.ai_title, Crash.ai_summary)
-        .where(
-            Crash.project_name == project_name,
-            Crash.signature == signature,
-            Crash.ai_summary.is_not(None),
-            Crash.crash_id != crash_id,
-        )
-        .order_by(Crash.date.desc())
-        .limit(1)
-    ).mappings().first()
-
-
-def _copy_tags(source_crash_id, target_crash_id):
-    tag_ids = db.session.execute(
-        select(CrashTag.tag_id).where(CrashTag.crash_id == source_crash_id)
-    ).scalars().all()
-    for tag_id in tag_ids:
-        db.session.execute(
-            pg_insert(CrashTag).values(crash_id=target_crash_id, tag_id=tag_id)
-            .on_conflict_do_nothing(index_elements=["crash_id", "tag_id"])
-        )
-
-
 def summarize_and_tag(crash_id, project_name):
-    """Ask Claude to summarize this crash and apply appropriate tags via the
-    app's own MCP server, then store a short title (ai_title) and a longer
-    description (ai_summary) separately. Raises on any failure - callers
-    should catch, log, and move on: ai_summary stays NULL, so the crash is
-    picked up again on a later cron tick.
+    """Ask Claude to review the group of crashes that share this crash's
+    signature and apply appropriate tags via the app's own MCP server, then
+    store a short title (ai_title) and a longer description (ai_summary) on
+    the owning CrashRelation - see app/models.py. Raises on any failure -
+    callers should catch, log, and move on: the relation's ai_summary stays
+    NULL, so the group is picked up again on a later cron tick.
 
-    First checks for an exact-content duplicate (see _find_duplicate), then
-    a same-signature duplicate (see _find_signature_duplicate) and, if
-    either is found, copies its title/summary and tags directly - no API
-    call at all. The copy is verbatim (no "(Same as crash #N.)" annotation -
-    duplicates are already visible via the signature-grouped Relations
-    view, and annotating here caused annotations to compound across chains
-    of duplicates-of-duplicates). Returns {"title": ..., "summary": ...}."""
-    dump, signature = db.session.execute(
-        select(Crash.dump, Crash.signature).where(Crash.crash_id == crash_id)
-    ).one_or_none() or (None, None)
+    `crash_id` must belong to a crash with a non-NULL signature (cron only
+    selects those) - it's used purely as a representative example to show
+    the model; the review it produces applies to the whole
+    (project_name, signature) group, not just this one occurrence.
 
-    if dump:
-        duplicate = _find_duplicate(project_name, dump, crash_id)
-        if duplicate is None and signature:
-            duplicate = _find_signature_duplicate(project_name, signature, crash_id)
-        if duplicate is not None:
-            title = duplicate["ai_title"]
-            summary = duplicate["ai_summary"]
-            _copy_tags(duplicate["crash_id"], crash_id)
-            db.session.execute(
-                update(Crash).where(Crash.crash_id == crash_id).values(ai_title=title, ai_summary=summary)
-            )
-            db.session.commit()
-            return {"title": title, "summary": summary}
+    If the relation already has a review (e.g. another crash in the same
+    group was processed first, earlier this tick or previously), returns it
+    directly with no API call - this replaces what used to be dump/signature
+    duplicate-detection against other crash rows: now there's simply one
+    owning row per group to check. Returns {"title": ..., "summary": ...}."""
+    signature = db.session.execute(
+        select(Crash.signature).where(Crash.crash_id == crash_id)
+    ).scalar_one_or_none()
+    if not signature:
+        raise ValueError(f"crash {crash_id} has no signature - can't be reviewed as a group")
+
+    existing = db.session.execute(
+        select(CrashRelation.ai_title, CrashRelation.ai_summary)
+        .where(CrashRelation.project_name == project_name, CrashRelation.signature == signature)
+    ).mappings().first()
+    if existing and existing["ai_summary"] is not None:
+        return {"title": existing["ai_title"], "summary": existing["ai_summary"]}
+
+    occurrence_count = db.session.execute(
+        select(func.count(Crash.crash_id)).where(
+            Crash.project_name == project_name, Crash.signature == signature
+        )
+    ).scalar_one()
 
     client = Anthropic(api_key=current_app.config["ANTHROPIC_API_KEY"])
     mcp_url = current_app.config["MCP_PUBLIC_URL"].rstrip("/") + "/mcp"
@@ -131,19 +82,24 @@ def summarize_and_tag(crash_id, project_name):
         messages=[{
             "role": "user",
             "content": (
-                f"Crash {crash_id} in project '{project_name}' was just symbolicated. "
-                "Use the esp-crash MCP tools: call get_crash to read its details, and "
-                "list_tags to see this project's existing tags. Then call add_tag_to_crash "
-                "once per tag that fits - reuse an existing tag whenever one applies, and "
-                "only create a new tag when nothing existing fits. Do not remove any "
-                "existing tags. Do not narrate your steps or explain what you're about to "
-                "do before or between tool calls - make all the tool calls first, then send "
-                "one final message with nothing but a title and a description, in exactly "
-                "this format and nothing else (no preamble, no markdown):\n\n"
+                f"Crash {crash_id} in project '{project_name}' is one of {occurrence_count} "
+                "crashes that share the same stack-fingerprint signature (the same likely "
+                "root cause). You're writing a title and description for this whole class "
+                "of crash - not just this single occurrence - and any tags you apply cover "
+                "every crash in the group. "
+                "Use the esp-crash MCP tools: call get_crash on crash "
+                f"{crash_id} as a representative example, and list_tags to see this "
+                "project's existing tags. Then call add_tag_to_crash once per tag that "
+                "fits - reuse an existing tag whenever one applies, and only create a new "
+                "tag when nothing existing fits. Do not remove any existing tags. Do not "
+                "narrate your steps or explain what you're about to do before or between "
+                "tool calls - make all the tool calls first, then send one final message "
+                "with nothing but a title and a description, in exactly this format and "
+                "nothing else (no preamble, no markdown):\n\n"
                 "TITLE: <a short headline, ideally under 60 characters, naming the crash "
                 "site and cause, e.g. \"Core dump in mqtt.c assert\">\n"
                 "DESCRIPTION: <a short (2-3 sentence) plain-English description of what "
-                "the crash is and its likely cause>\n\n"
+                "this class of crash is and its likely cause>\n\n"
                 "Both are shown as-is to a human reading the crash report."
             ),
         }],
@@ -168,7 +124,9 @@ def summarize_and_tag(crash_id, project_name):
     title, summary = match.group(1).strip(), match.group(2).strip()
 
     db.session.execute(
-        update(Crash).where(Crash.crash_id == crash_id).values(ai_title=title, ai_summary=summary)
+        update(CrashRelation)
+        .where(CrashRelation.project_name == project_name, CrashRelation.signature == signature)
+        .values(ai_title=title, ai_summary=summary)
     )
     db.session.commit()
     return {"title": title, "summary": summary}

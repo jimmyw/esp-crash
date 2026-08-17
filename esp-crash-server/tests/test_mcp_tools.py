@@ -185,7 +185,8 @@ def test_list_tags_scoped(app, db_conn, ctx):
 def test_add_tag_to_crash_creates_and_reuses(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    sig = "d" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
 
     result = tools.add_tag_to_crash("alice", crash_id, "Reviewed", "Looked at")
     assert result["added"] is True
@@ -196,14 +197,17 @@ def test_add_tag_to_crash_creates_and_reuses(app, db_conn, ctx):
     assert result2["tag"]["tag_id"] == result["tag"]["tag_id"]
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM crash_tag WHERE crash_id = %s", (crash_id,))
+        cur.execute(
+            "SELECT COUNT(*) FROM crash_relation_tag WHERE project_name = %s AND signature = %s",
+            ("proj-a", sig),
+        )
         assert cur.fetchone()[0] == 1
 
 
 def test_add_tag_to_crash_denied_for_other_user(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature="e" * 64)
 
     result = tools.add_tag_to_crash("mallory", crash_id, "wontfix")
     assert result["added"] is False
@@ -212,12 +216,24 @@ def test_add_tag_to_crash_denied_for_other_user(app, db_conn, ctx):
         assert cur.fetchone()[0] == 0
 
 
+def test_add_tag_to_crash_rejects_unsignatured_crash(app, db_conn, ctx):
+    """Tags live on the crash's relation (project_name, signature) - a
+    crash with no signature has no relation to attach one to."""
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+
+    result = tools.add_tag_to_crash("alice", crash_id, "wontfix")
+    assert result["added"] is False
+    assert result["reason"] == "crash has no signature"
+
+
 def test_tag_name_scoped_per_project(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     helpers.create_project(db_conn, "proj-b", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_a = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
-    crash_b = helpers.create_crash(db_conn, "proj-b", "1.0", dev)
+    crash_a = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature="f" * 64)
+    crash_b = helpers.create_crash(db_conn, "proj-b", "1.0", dev, signature="f" * 64)
 
     tag_a = tools.add_tag_to_crash("alice", crash_a, "wontfix")["tag"]
     tag_b = tools.add_tag_to_crash("alice", crash_b, "wontfix")["tag"]
@@ -227,7 +243,8 @@ def test_tag_name_scoped_per_project(app, db_conn, ctx):
 def test_remove_tag_from_crash(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    sig = "g" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
     tag_id = tools.add_tag_to_crash("alice", crash_id, "wontfix")["tag"]["tag_id"]
 
     # other user can't remove it
@@ -235,7 +252,10 @@ def test_remove_tag_from_crash(app, db_conn, ctx):
 
     assert tools.remove_tag_from_crash("alice", crash_id, tag_id)["removed"] is True
     with db_conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM crash_tag WHERE crash_id = %s", (crash_id,))
+        cur.execute(
+            "SELECT COUNT(*) FROM crash_relation_tag WHERE project_name = %s AND signature = %s",
+            ("proj-a", sig),
+        )
         assert cur.fetchone()[0] == 0
     # the tag itself is left intact for reuse
     with db_conn.cursor() as cur:
@@ -246,7 +266,7 @@ def test_remove_tag_from_crash(app, db_conn, ctx):
 def test_list_crashes_tag_filter(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_1 = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    crash_1 = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature="h" * 64)
     crash_2 = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
     tag_id = helpers.create_tag(db_conn, "proj-a", "wontfix")
     helpers.tag_crash(db_conn, crash_1, tag_id)
@@ -301,7 +321,7 @@ def test_get_crash_includes_signature(app, db_conn, ctx):
 def test_get_crash_includes_tags(app, db_conn, ctx):
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature="i" * 64)
     tag_id = helpers.create_tag(db_conn, "proj-a", "reviewed", description="Looked at")
     helpers.tag_crash(db_conn, crash_id, tag_id)
 
@@ -309,18 +329,26 @@ def test_get_crash_includes_tags(app, db_conn, ctx):
     assert crash["tags"] == [{"tag_id": tag_id, "name": "reviewed", "description": "Looked at"}]
 
 
-def test_delete_crash_cascades_crash_tag(app, db_conn, ctx):
+def test_delete_crash_does_not_remove_relation_tags(app, db_conn, ctx):
+    """Tags are owned by the relation (project_name, signature), not the
+    crash - deleting one crash must not touch tags that could still apply
+    to other crashes sharing the same signature (crash_relation_tag has no
+    FK to crash at all)."""
     helpers.create_project(db_conn, "proj-a", github_user="alice")
     dev = helpers.create_device(db_conn, "dev-1")
-    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+    sig = "j" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
     tag_id = helpers.create_tag(db_conn, "proj-a", "wontfix")
     helpers.tag_crash(db_conn, crash_id, tag_id)
 
     assert tools.delete_crash("alice", crash_id)["deleted"] == 1
     with db_conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM crash_tag WHERE crash_id = %s", (crash_id,))
-        assert cur.fetchone()[0] == 0
-    # the tag row itself survives (orphaned tags are kept for reuse)
+        cur.execute(
+            "SELECT COUNT(*) FROM crash_relation_tag WHERE project_name = %s AND signature = %s",
+            ("proj-a", sig),
+        )
+        assert cur.fetchone()[0] == 1
+    # the tag row itself survives too (orphaned tags are kept for reuse)
     with db_conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM tag WHERE tag_id = %s", (tag_id,))
         assert cur.fetchone()[0] == 1

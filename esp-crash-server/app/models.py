@@ -39,13 +39,12 @@ class Crash(db.Model):
     dump = db.Column(db.Text)
     module_names = db.Column(ARRAY(db.Text))
     module_map = db.Column(JSONB)
-    ai_summary = db.Column(db.Text)
-    # Short (~60 char) human-readable headline, e.g. "Core dump in mqtt.c
-    # assert" - generated alongside ai_summary, see app/ai_tagging.py.
-    ai_title = db.Column(db.Text)
     # Non-AI duplicate-grouping fingerprint - see app/crash_signature.py.
     # NULL for crashes not yet backfilled or whose dump has no parseable
-    # GDB backtrace.
+    # GDB backtrace. AI review (ai_title/ai_summary) and tags live on the
+    # CrashRelation this signature points at, not on the crash itself - a
+    # crash with signature IS NULL has no relation and so can't have
+    # either.
     signature = db.Column(db.Text)
 
 
@@ -128,15 +127,34 @@ class Tag(db.Model):
     description = db.Column(db.Text)
 
 
-class CrashTag(db.Model):
-    __tablename__ = "crash_tag"
+class CrashRelation(db.Model):
+    """Owns the AI review (ai_title/ai_summary) and, via CrashRelationTag,
+    the tags for every crash sharing a (project_name, signature) - see
+    app/ai_tagging.py. Crash rows link here implicitly by matching their
+    own project_name/signature; there is no FK column on crash_relation
+    pointing back, since many crashes point at one relation."""
+    __tablename__ = "crash_relation"
+
+    project_name = db.Column(db.Text, primary_key=True)
+    signature = db.Column(db.Text, primary_key=True)
+    ai_title = db.Column(db.Text)
+    ai_summary = db.Column(db.Text)
+    created_at = db.Column(db.TIMESTAMP, server_default=db.func.now())
+
+
+class CrashRelationTag(db.Model):
+    __tablename__ = "crash_relation_tag"
     __table_args__ = (
-        db.Index("idx_crash_tag_tag_id", "tag_id"),
+        db.ForeignKeyConstraint(
+            ["project_name", "signature"],
+            ["crash_relation.project_name", "crash_relation.signature"],
+            ondelete="CASCADE",
+        ),
+        db.Index("idx_crash_relation_tag_tag_id", "tag_id"),
     )
 
-    crash_id = db.Column(
-        db.Integer, db.ForeignKey("crash.crash_id", ondelete="CASCADE"), primary_key=True
-    )
+    project_name = db.Column(db.Text, primary_key=True)
+    signature = db.Column(db.Text, primary_key=True)
     tag_id = db.Column(
         db.Integer, db.ForeignKey("tag.tag_id", ondelete="CASCADE"), primary_key=True
     )

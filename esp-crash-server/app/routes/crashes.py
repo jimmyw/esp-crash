@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select, update
 
 from .. import decode
 from ..auth import auth_filter, auth_project_in_filter, login_required
-from ..models import Crash, CrashTag, Device, ElfFile, ModuleElf, ProjectAuth, ProjectSettings, Tag, db
+from ..models import Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ModuleElf, ProjectAuth, ProjectSettings, Tag, db
 from ..rendering import render_template
 
 
@@ -33,13 +33,17 @@ def show_project_crash(project_name, crash_id):
             Crash.crash_id, Crash.date, Crash.project_name, Crash.device_id,
             Crash.project_ver, Crash.crash_dmp, Device.ext_device_id,
             func.coalesce(Device.alias, "").label("device_alias"), Crash.dump,
-            ProjectSettings.device_url_template, Crash.module_map, Crash.ai_title,
-            Crash.ai_summary, Crash.signature,
+            ProjectSettings.device_url_template, Crash.module_map,
+            CrashRelation.ai_title, CrashRelation.ai_summary, Crash.signature,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
         .join(Device, Crash.device_id == Device.device_id)
         .outerjoin(ProjectSettings, Crash.project_name == ProjectSettings.project_name)
+        # Outer: a crash with no signature has no relation - it simply
+        # shows no title/summary (see the crash.ai_title/ai_summary guards
+        # in crash.html).
+        .outerjoin(CrashRelation, (CrashRelation.project_name == Crash.project_name) & (CrashRelation.signature == Crash.signature))
         .where(Crash.crash_id == crash_id, auth_filter(ProjectAuth.github))
         .order_by(Crash.date.desc())
     ).mappings().all()
@@ -59,12 +63,17 @@ def show_project_crash(project_name, crash_id):
         .order_by(ElfFile.date.desc())
     ).mappings().all()
 
+    # Tags live on the crash's relation (project_name, signature) - a
+    # crash with no signature has no relation and so no tags.
     crash["tags"] = db.session.execute(
         select(Tag.tag_id, Tag.name, Tag.description)
-        .join(CrashTag, CrashTag.tag_id == Tag.tag_id)
-        .where(CrashTag.crash_id == crash_id)
+        .join(CrashRelationTag, CrashRelationTag.tag_id == Tag.tag_id)
+        .where(
+            CrashRelationTag.project_name == crash["project_name"],
+            CrashRelationTag.signature == crash["signature"],
+        )
         .order_by(Tag.name)
-    ).mappings().all()
+    ).mappings().all() if crash["signature"] else []
 
     # Full project tag list, for the "pick an existing tag" datalist.
     project_tags = db.session.execute(
@@ -116,23 +125,29 @@ def refresh_crash(project_name, crash_id):
 
 @login_required
 def reload_crash_summary(project_name, crash_id):
-    """Clear the stored AI title/summary so the next cron tick regenerates
-    them. Existing tags are left alone - summarize_and_tag never removes a
-    tag, only adds ones that fit."""
-
-    # Same auth pattern as refresh_crash: only clears when a matching
-    # project_auth row exists (an absent grant leaves the row untouched).
-    db.session.execute(
-        update(Crash)
+    """Clear the stored AI title/summary on this crash's relation so the
+    next cron tick regenerates them - affects every crash sharing this
+    signature, since the review is owned by the whole group (see
+    app/ai_tagging.py), not this crash alone. Existing tags are left alone
+    - summarize_and_tag never removes a tag, only adds ones that fit.
+    No-op if the crash has no signature (no relation) or the caller lacks
+    access."""
+    signature = db.session.execute(
+        select(Crash.signature)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
         .where(
             Crash.crash_id == crash_id,
-            Crash.project_name.in_(
-                select(ProjectAuth.project_name).where(auth_filter(ProjectAuth.github))
-            ),
+            Crash.project_name == project_name,
+            auth_filter(ProjectAuth.github),
         )
-        .values(ai_title=None, ai_summary=None)
-    )
-    db.session.commit()
+    ).scalar_one_or_none()
+    if signature:
+        db.session.execute(
+            update(CrashRelation)
+            .where(CrashRelation.project_name == project_name, CrashRelation.signature == signature)
+            .values(ai_title=None, ai_summary=None)
+        )
+        db.session.commit()
 
     return redirect(url_for('show_project_crash', project_name=project_name, crash_id=crash_id))
 

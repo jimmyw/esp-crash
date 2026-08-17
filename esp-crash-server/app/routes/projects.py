@@ -4,15 +4,15 @@ server.py - routes and logic unchanged, endpoint names preserved exactly
 (registered directly on the app object, not via Flask Blueprint - see
 core.py for why)."""
 from flask import current_app, redirect, request, session, url_for
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from device_url import DEVICE_ID_PLACEHOLDER, device_url_template_is_valid
 
 from ..auth import auth_filter, login_required
 from ..models import (
-    Crash, CrashTag, Device, ElfFile, ProjectAuth, ProjectSettings,
-    ProjectSlackIntegration, ProjectWebhook, Tag, db,
+    Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ProjectAuth,
+    ProjectSettings, ProjectSlackIntegration, ProjectWebhook, Tag, db,
 )
 from ..rendering import render_template
 
@@ -33,7 +33,12 @@ def list_project_crashes(project_name):
     if search and len(search) > 0:
         conditions.append(Crash.textsearch.op("@@")(func.plainto_tsquery(search)))
     if tag_id:
-        conditions.append(Crash.crash_id.in_(select(CrashTag.crash_id).where(CrashTag.tag_id == tag_id)))
+        conditions.append(
+            tuple_(Crash.project_name, Crash.signature).in_(
+                select(CrashRelationTag.project_name, CrashRelationTag.signature)
+                .where(CrashRelationTag.tag_id == tag_id)
+            )
+        )
     if signature:
         conditions.append(Crash.signature == signature)
 
@@ -78,17 +83,21 @@ def list_project_crashes(project_name):
     # Tags aren't folded into the aggregate query above (it already juggles
     # an array_agg + a count() window) - fetch them in one batched query and
     # attach in Python, the same idiom used for builds in mcp_app/tools.py.
-    crash_ids = [c["crash_id"] for c in crashes]
-    tags_by_crash = {}
-    if crash_ids:
+    # Tags live on the CrashRelation (project_name, signature), not the
+    # crash - keyed here by that tuple, since several crashes on this page
+    # can share one relation. Crashes with no signature have no relation
+    # and so get no tags.
+    relation_keys = {(c["project_name"], c["signature"]) for c in crashes if c["signature"]}
+    tags_by_relation = {}
+    if relation_keys:
         tag_rows = db.session.execute(
-            select(CrashTag.crash_id, Tag.tag_id, Tag.name, Tag.description)
-            .join(Tag, CrashTag.tag_id == Tag.tag_id)
-            .where(CrashTag.crash_id.in_(crash_ids))
+            select(CrashRelationTag.project_name, CrashRelationTag.signature, Tag.tag_id, Tag.name, Tag.description)
+            .join(Tag, CrashRelationTag.tag_id == Tag.tag_id)
+            .where(tuple_(CrashRelationTag.project_name, CrashRelationTag.signature).in_(relation_keys))
             .order_by(Tag.name)
         ).mappings().all()
         for t in tag_rows:
-            tags_by_crash.setdefault(t["crash_id"], []).append(
+            tags_by_relation.setdefault((t["project_name"], t["signature"]), []).append(
                 {"tag_id": t["tag_id"], "name": t["name"], "description": t["description"]}
             )
     # Related-crash counts (non-AI, see app/crash_signature.py) - batched the
@@ -112,7 +121,7 @@ def list_project_crashes(project_name):
     crashes = [
         dict(
             c,
-            tags=tags_by_crash.get(c["crash_id"], []),
+            tags=tags_by_relation.get((c["project_name"], c["signature"]), []) if c["signature"] else [],
             # -1 to exclude the crash itself from its own related count.
             related_count=max(0, related_counts.get(c["signature"], 0) - 1) if c["signature"] else 0,
         )
@@ -143,68 +152,57 @@ def list_crashes():
 
 @login_required
 def list_project_relations(project_name):
-    """List unique crash "relations" for a project - one row per non-AI
+    """List crash_relation rows for a project - one row per non-AI
     stack-fingerprint signature (see app/crash_signature.py), most recently
     seen first. A de-duplicated companion to list_project_crashes: instead
-    of one row per crash, groups crashes that are likely the same bug."""
+    of one row per crash, groups crashes that are likely the same bug.
+    CrashRelation owns the AI title/summary and tags directly (see
+    app/models.py), so this is a near-direct read rather than an
+    aggregation over crash rows."""
     offset = int(request.args.get('offset', 0))
     limit = int(request.args.get('limit', 50))
 
-    conditions = [
-        auth_filter(ProjectAuth.github),
-        Crash.project_name == project_name,
-        Crash.signature.isnot(None),
-    ]
+    # Join through Crash+ProjectAuth (not just CrashRelation.project_name)
+    # for auth enforcement, same as list_project_crashes - a caller with no
+    # grant for this project sees nothing. count(distinct ...) guards
+    # against the ProjectAuth join fanning out a project with multiple ACL
+    # rows (or every row matching in no-auth mode).
+    base_conditions = [CrashRelation.project_name == project_name, auth_filter(ProjectAuth.github)]
 
-    agg = (
+    full_count = db.session.execute(
+        select(func.count(func.distinct(CrashRelation.signature)))
+        .select_from(CrashRelation)
+        .join(Crash, (Crash.project_name == CrashRelation.project_name) & (Crash.signature == CrashRelation.signature))
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .where(*base_conditions)
+    ).scalar_one()
+
+    relations = db.session.execute(
         select(
-            Crash.signature,
+            CrashRelation.signature,
+            CrashRelation.ai_title,
             func.count(func.distinct(Crash.crash_id)).label("crash_count"),
             func.max(Crash.date).label("last_seen"),
         )
-        .select_from(Crash)
+        .select_from(CrashRelation)
+        .join(Crash, (Crash.project_name == CrashRelation.project_name) & (Crash.signature == CrashRelation.signature))
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
-        .where(*conditions)
-        .group_by(Crash.signature)
-    ).subquery()
-
-    # Representative (most recent) crash per signature, for its short
-    # ai_title - DISTINCT ON needs signature first in ORDER BY; the final
-    # sort by last_seen happens in the outer query below.
-    latest = (
-        select(Crash.signature, Crash.ai_title)
-        .select_from(Crash)
-        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
-        .where(*conditions)
-        .distinct(Crash.signature)
-        .order_by(Crash.signature, Crash.date.desc())
-    ).subquery()
-
-    full_count = db.session.execute(select(func.count()).select_from(agg)).scalar_one()
-
-    relations = db.session.execute(
-        select(agg.c.signature, agg.c.crash_count, agg.c.last_seen, latest.c.ai_title)
-        .select_from(agg)
-        .join(latest, latest.c.signature == agg.c.signature)
-        .order_by(agg.c.last_seen.desc())
+        .where(*base_conditions)
+        .group_by(CrashRelation.signature, CrashRelation.ai_title)
+        .order_by(func.max(Crash.date).desc())
         .limit(limit)
         .offset(offset)
     ).mappings().all()
 
-    # Tags aggregated across every crash sharing a signature - batched the
-    # same way as the per-crash tags in list_project_crashes above. DISTINCT
-    # collapses to one row per (signature, tag) since tag_id determines
-    # name/description.
+    # Tags owned directly by the relation - batched the same way as the
+    # per-crash tags in list_project_crashes above.
     signatures = [r["signature"] for r in relations]
     tags_by_signature = {}
     if signatures:
         tag_rows = db.session.execute(
-            select(Crash.signature, Tag.tag_id, Tag.name, Tag.description)
-            .distinct()
-            .select_from(Crash)
-            .join(CrashTag, CrashTag.crash_id == Crash.crash_id)
-            .join(Tag, Tag.tag_id == CrashTag.tag_id)
-            .where(Crash.project_name == project_name, Crash.signature.in_(signatures))
+            select(CrashRelationTag.signature, Tag.tag_id, Tag.name, Tag.description)
+            .join(Tag, Tag.tag_id == CrashRelationTag.tag_id)
+            .where(CrashRelationTag.project_name == project_name, CrashRelationTag.signature.in_(signatures))
             .order_by(Tag.name)
         ).mappings().all()
         for t in tag_rows:

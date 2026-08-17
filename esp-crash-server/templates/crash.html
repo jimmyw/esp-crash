@@ -97,6 +97,10 @@
 {% endif %}
 {% endif %}
 
+{% if crash.signature %}
+{# Tags live on this crash's relation (project_name, signature) - a crash
+   with no signature has no relation and so structurally nothing to show
+   or add here (not even an empty "no tags" state). #}
 <div class="w-5/6 mt-4">
     <div class="flex flex-wrap items-center gap-2">
         {% for t in crash.tags %}
@@ -140,6 +144,7 @@ document.addEventListener('DOMContentLoaded', function () {
     sync();
 });
 </script>
+{% endif %}
 
 {% if modules %}
 <div class="w-5/6 mt-4">

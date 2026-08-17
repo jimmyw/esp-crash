@@ -13,13 +13,27 @@ import slack_sdk
 from flask import current_app
 from slack_sdk.errors import SlackApiError
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import decode_module_coredump as mod_decoder
 from .. import decode
 from ..ai_tagging import summarize_and_tag
 from ..crash_signature import compute_signature
-from ..models import Crash, ElfFile, ProjectAuth, ProjectSlackIntegration, ProjectWebhook, db
+from ..models import Crash, CrashRelation, ElfFile, ProjectAuth, ProjectSlackIntegration, ProjectWebhook, db
 from ..rendering import external_url_for
+
+
+def _upsert_relation(project_name, signature):
+    """Ensure a CrashRelation row exists for (project_name, signature)
+    before any crash is given that signature - crash.signature has an FK
+    to crash_relation, so the relation must exist first. No-op if
+    compute_signature() found no parseable backtrace (signature is None)."""
+    if not signature:
+        return
+    db.session.execute(
+        pg_insert(CrashRelation).values(project_name=project_name, signature=signature)
+        .on_conflict_do_nothing(index_elements=["project_name", "signature"])
+    )
 
 
 def cron():
@@ -99,12 +113,14 @@ def cron():
                         pass
 
         module_names = [m["name"] for m in last_module_map]
+        signature = compute_signature(dump)
+        _upsert_relation(crash["project_name"], signature)
         db.session.execute(
             update(Crash)
             .where(Crash.crash_id == crash["crash_id"])
             .values(
                 dump=dump, module_names=module_names, module_map=last_module_map,
-                signature=compute_signature(dump),
+                signature=signature,
             )
         )
         db.session.commit()
@@ -273,7 +289,7 @@ def cron():
     # cost or backlog-explosion concern, so a generous batch size just runs
     # the backlog down over a handful of ticks.
     backfill_targets = db.session.execute(
-        select(Crash.crash_id, Crash.dump)
+        select(Crash.crash_id, Crash.project_name, Crash.dump)
         .where(Crash.dump.is_not(None), Crash.signature.is_(None))
         .order_by(Crash.crash_id.desc())
         .limit(500)
@@ -281,9 +297,11 @@ def cron():
     if backfill_targets:
         processed_anything = True
         for row in backfill_targets:
+            signature = compute_signature(row["dump"])
+            _upsert_relation(row["project_name"], signature)
             db.session.execute(
                 update(Crash).where(Crash.crash_id == row["crash_id"])
-                .values(signature=compute_signature(row["dump"]))
+                .values(signature=signature)
             )
         db.session.commit()
         current_app.logger.info(f"Backfilled signature for {len(backfill_targets)} crashes")
@@ -313,11 +331,24 @@ def cron():
             "MCP_PUBLIC_URL / MCP_SERVICE_TOKEN is not - skipping AI summarize/tag step"
         )
     if ai_configured:
+        # One representative (most recent) crash per not-yet-reviewed
+        # (project_name, signature) group, rather than per crash - the
+        # review is written once per group (see app/ai_tagging.py), so
+        # picking several crashes from the same backlog-heavy group would
+        # waste API calls re-confirming "already reviewed" instead of
+        # covering distinct issues.
         ai_crashes = db.session.execute(
             select(Crash.crash_id, Crash.project_name)
             .join(ProjectAuth, (Crash.project_name == ProjectAuth.project_name)
                                 & (ProjectAuth.github == service_user))
-            .where(Crash.dump.is_not(None), Crash.ai_summary.is_(None), Crash.date > ProjectAuth.date)
+            .join(CrashRelation, (CrashRelation.project_name == Crash.project_name)
+                                  & (CrashRelation.signature == Crash.signature))
+            .where(
+                Crash.dump.is_not(None), Crash.signature.is_not(None),
+                CrashRelation.ai_summary.is_(None), Crash.date > ProjectAuth.date,
+            )
+            .distinct(Crash.project_name, Crash.signature)
+            .order_by(Crash.project_name, Crash.signature, Crash.date.desc())
             .limit(10)
         ).mappings().all()
         processed_anything = processed_anything or bool(ai_crashes)

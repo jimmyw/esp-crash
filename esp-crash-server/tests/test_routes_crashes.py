@@ -41,25 +41,48 @@ def test_refresh_crash_clears_dump_and_redirects(client, db_conn):
 def test_reload_crash_summary_clears_title_and_summary_and_redirects(client, db_conn):
     helpers.create_project(db_conn, "proj-c4b", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c4b")
+    sig = "f" * 64
     crash_id = helpers.create_crash(
         db_conn, "proj-c4b", "1.0", device_id, dump="symbolicated text",
-        ai_title="Old title", ai_summary="Old summary",
+        signature=sig, ai_title="Old title", ai_summary="Old summary",
     )
 
     resp = client.post(f"/projects/proj-c4b/{crash_id}/reload-summary")
     assert resp.status_code == 302
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        cur.execute("SELECT ai_title, ai_summary FROM crash_relation WHERE project_name = %s AND signature = %s", ("proj-c4b", sig))
         assert cur.fetchone() == (None, None)
+
+
+def test_reload_crash_summary_clears_review_for_whole_group(client, db_conn):
+    """ai_title/ai_summary are owned by the relation, not the crash -
+    reloading via one crash clears the review for every crash sharing its
+    signature."""
+    helpers.create_project(db_conn, "proj-c4d", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-c4d")
+    sig = "g" * 64
+    crash_a = helpers.create_crash(
+        db_conn, "proj-c4d", "1.0", device_id, dump="dump a",
+        signature=sig, ai_title="Shared title", ai_summary="Shared summary",
+    )
+    crash_b = helpers.create_crash(db_conn, "proj-c4d", "1.0", device_id, dump="dump b", signature=sig)
+
+    resp = client.post(f"/projects/proj-c4d/{crash_a}/reload-summary")
+    assert resp.status_code == 302
+
+    resp_b = client.get(f"/projects/proj-c4d/{crash_b}")
+    assert b"Shared title" not in resp_b.data
+    assert b"Shared summary" not in resp_b.data
 
 
 def test_reload_crash_summary_shows_review_again_button_when_summarized(client, db_conn):
     helpers.create_project(db_conn, "proj-c4c", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c4c")
+    sig = "h" * 64
     crash_id = helpers.create_crash(
         db_conn, "proj-c4c", "1.0", device_id, dump="symbolicated text",
-        ai_title="Some title", ai_summary="Some summary",
+        signature=sig, ai_title="Some title", ai_summary="Some summary",
     )
 
     resp = client.get(f"/projects/proj-c4c/{crash_id}")
@@ -93,8 +116,9 @@ def test_show_project_crash_hides_related_link_without_signature(client, db_conn
 def test_show_project_crash_renders_ai_summary(client, db_conn):
     helpers.create_project(db_conn, "proj-c6", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c6")
+    sig = "i" * 64
     crash_id = helpers.create_crash(
-        db_conn, "proj-c6", "1.0", device_id,
+        db_conn, "proj-c6", "1.0", device_id, signature=sig,
         dump="dump text", ai_summary="This crash is a stack overflow.",
     )
     resp = client.get(f"/projects/proj-c6/{crash_id}")
@@ -108,8 +132,9 @@ def test_show_project_crash_ai_summary_preserves_newlines(client, db_conn):
     CSS class that actually renders them."""
     helpers.create_project(db_conn, "proj-c7-ai-nl", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-c7-ai-nl")
+    sig = "j" * 64
     crash_id = helpers.create_crash(
-        db_conn, "proj-c7-ai-nl", "1.0", device_id,
+        db_conn, "proj-c7-ai-nl", "1.0", device_id, signature=sig,
         dump="dump text", ai_summary="First line.\nSecond line.",
     )
     resp = client.get(f"/projects/proj-c7-ai-nl/{crash_id}")

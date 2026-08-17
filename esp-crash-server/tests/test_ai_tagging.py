@@ -1,6 +1,7 @@
 """Tests for app/ai_tagging.py - mocks the anthropic client entirely (no
 real API calls), verifying the request shape and that the returned
-title/summary are persisted."""
+title/summary are persisted on the crash's relation (project_name,
+signature) - see app/models.py."""
 from app import ai_tagging
 
 import helpers
@@ -48,7 +49,13 @@ def _title_description_text(title, description):
     return f"TITLE: {title}\nDESCRIPTION: {description}"
 
 
-def test_summarize_and_tag_writes_title_and_summary_and_calls_mcp_connector(app, db_conn, monkeypatch):
+def _configure(app):
+    app.config["ANTHROPIC_API_KEY"] = "sk-test"
+    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
+    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
+
+
+def test_summarize_and_tag_writes_title_and_summary_to_relation(app, db_conn, monkeypatch):
     calls = []
     title = "Stack overflow in task X"
     description = "Stack overflow in task X caused by a large local buffer."
@@ -60,12 +67,10 @@ def test_summarize_and_tag_writes_title_and_summary_and_calls_mcp_connector(app,
 
     helpers.create_project(db_conn, "proj-ai-1", github_user="alice")
     device_id = helpers.create_device(db_conn, "dev-ai-1")
-    crash_id = helpers.create_crash(db_conn, "proj-ai-1", "1.0", device_id, dump="symbolicated text")
+    sig = "a" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-ai-1", "1.0", device_id, dump="symbolicated text", signature=sig)
 
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
+    _configure(app)
     with app.app_context():
         result = ai_tagging.summarize_and_tag(crash_id, "proj-ai-1")
 
@@ -77,11 +82,38 @@ def test_summarize_and_tag_writes_title_and_summary_and_calls_mcp_connector(app,
     assert kwargs["mcp_servers"][0]["url"] == "https://mcp-esp-crash.example/mcp"
     assert kwargs["mcp_servers"][0]["authorization_token"] == "svc-token"
     assert kwargs["tools"] == [{"type": "mcp_toolset", "mcp_server_name": "esp-crash"}]
-    assert str(crash_id) in kwargs["messages"][0]["content"]
+    prompt = kwargs["messages"][0]["content"]
+    assert str(crash_id) in prompt
+    # Framed as a group review, not a single occurrence - "1 crash" here
+    # since this is the only crash sharing this signature.
+    assert "one of 1 crashes" in prompt
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        cur.execute("SELECT ai_title, ai_summary FROM crash_relation WHERE project_name = %s AND signature = %s", ("proj-ai-1", sig))
         assert cur.fetchone() == (title, description)
+
+
+def test_summarize_and_tag_prompt_reports_group_size(app, db_conn, monkeypatch):
+    calls = []
+    fake_response = _FakeResponse(_title_description_text("T", "D"))
+    monkeypatch.setattr(
+        ai_tagging, "Anthropic",
+        lambda api_key=None: _FakeAnthropicClient(fake_response, calls),
+    )
+
+    helpers.create_project(db_conn, "proj-ai-group", github_user="alice")
+    device_id = helpers.create_device(db_conn, "dev-ai-group")
+    sig = "b" * 64
+    crash_1 = helpers.create_crash(db_conn, "proj-ai-group", "1.0", device_id, dump="dump 1", signature=sig)
+    helpers.create_crash(db_conn, "proj-ai-group", "1.0", device_id, dump="dump 2", signature=sig)
+    helpers.create_crash(db_conn, "proj-ai-group", "1.0", device_id, dump="dump 3", signature=sig)
+
+    _configure(app)
+    with app.app_context():
+        ai_tagging.summarize_and_tag(crash_1, "proj-ai-group")
+
+    prompt = calls[0]["messages"][0]["content"]
+    assert "one of 3 crashes" in prompt
 
 
 def test_summarize_and_tag_strips_narration_between_tool_calls(app, db_conn, monkeypatch):
@@ -108,12 +140,10 @@ def test_summarize_and_tag_strips_narration_between_tool_calls(app, db_conn, mon
 
     helpers.create_project(db_conn, "proj-ai-narration", github_user="alice")
     device_id = helpers.create_device(db_conn, "dev-ai-narration")
-    crash_id = helpers.create_crash(db_conn, "proj-ai-narration", "1.0", device_id, dump="symbolicated text")
+    sig = "c" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-ai-narration", "1.0", device_id, dump="symbolicated text", signature=sig)
 
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
+    _configure(app)
     with app.app_context():
         result = ai_tagging.summarize_and_tag(crash_id, "proj-ai-narration")
 
@@ -122,7 +152,7 @@ def test_summarize_and_tag_strips_narration_between_tool_calls(app, db_conn, mon
     assert "Now I'll tag this crash" not in result["summary"]
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        cur.execute("SELECT ai_title, ai_summary FROM crash_relation WHERE project_name = %s AND signature = %s", ("proj-ai-narration", sig))
         assert cur.fetchone() == (title, description)
 
 
@@ -142,12 +172,10 @@ def test_summarize_and_tag_joins_multiple_trailing_text_blocks(app, db_conn, mon
 
     helpers.create_project(db_conn, "proj-ai-multi-text", github_user="alice")
     device_id = helpers.create_device(db_conn, "dev-ai-multi-text")
-    crash_id = helpers.create_crash(db_conn, "proj-ai-multi-text", "1.0", device_id, dump="symbolicated text")
+    sig = "d" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-ai-multi-text", "1.0", device_id, dump="symbolicated text", signature=sig)
 
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
+    _configure(app)
     with app.app_context():
         result = ai_tagging.summarize_and_tag(crash_id, "proj-ai-multi-text")
 
@@ -156,7 +184,8 @@ def test_summarize_and_tag_joins_multiple_trailing_text_blocks(app, db_conn, mon
 
 def test_summarize_and_tag_raises_on_unparseable_format(app, db_conn, monkeypatch):
     """If the model doesn't follow the TITLE:/DESCRIPTION: format, raise
-    rather than store garbage - ai_summary stays NULL so cron retries it."""
+    rather than store garbage - the relation's ai_summary stays NULL so
+    cron retries the group later."""
     calls = []
     fake_response = _FakeResponse("Just a plain sentence with no format at all.")
     monkeypatch.setattr(
@@ -166,12 +195,10 @@ def test_summarize_and_tag_raises_on_unparseable_format(app, db_conn, monkeypatc
 
     helpers.create_project(db_conn, "proj-ai-badformat", github_user="alice")
     device_id = helpers.create_device(db_conn, "dev-ai-badformat")
-    crash_id = helpers.create_crash(db_conn, "proj-ai-badformat", "1.0", device_id, dump="symbolicated text")
+    sig = "e" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-ai-badformat", "1.0", device_id, dump="symbolicated text", signature=sig)
 
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
+    _configure(app)
     with app.app_context():
         try:
             ai_tagging.summarize_and_tag(crash_id, "proj-ai-badformat")
@@ -180,130 +207,91 @@ def test_summarize_and_tag_raises_on_unparseable_format(app, db_conn, monkeypatc
             pass
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (crash_id,))
+        cur.execute("SELECT ai_title, ai_summary FROM crash_relation WHERE project_name = %s AND signature = %s", ("proj-ai-badformat", sig))
         assert cur.fetchone() == (None, None)
 
 
-def test_summarize_and_tag_reuses_exact_duplicate_without_calling_api(app, db_conn, monkeypatch):
+def test_summarize_and_tag_raises_for_unsignatured_crash(app, db_conn, monkeypatch):
+    """cron only ever selects crashes with a signature - this is a
+    defensive check, not a normal path. No API call either way."""
+    calls = []
+    monkeypatch.setattr(
+        ai_tagging, "Anthropic",
+        lambda api_key=None: _FakeAnthropicClient(_FakeResponse("unused"), calls),
+    )
+
+    helpers.create_project(db_conn, "proj-ai-nosig", github_user="alice")
+    device_id = helpers.create_device(db_conn, "dev-ai-nosig")
+    crash_id = helpers.create_crash(db_conn, "proj-ai-nosig", "1.0", device_id, dump="symbolicated text")
+
+    _configure(app)
+    with app.app_context():
+        try:
+            ai_tagging.summarize_and_tag(crash_id, "proj-ai-nosig")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+    assert calls == []
+
+
+def test_summarize_and_tag_reuses_existing_relation_review_without_calling_api(app, db_conn, monkeypatch):
+    """If another crash in the same group already triggered a review
+    (or the relation was reviewed on a previous cron tick), the relation
+    already has ai_summary set - no API call needed, just read it back.
+    This is the group-owning-row replacement for the old per-crash
+    duplicate-detection logic."""
     calls = []
 
     def fail_if_called(api_key=None):
-        raise AssertionError("Anthropic client should not be constructed for an exact-content duplicate")
+        raise AssertionError("Anthropic client should not be constructed when the relation is already reviewed")
 
     monkeypatch.setattr(ai_tagging, "Anthropic", fail_if_called)
 
     helpers.create_project(db_conn, "proj-ai-dup", github_user="alice")
     device_id = helpers.create_device(db_conn, "dev-ai-dup")
-    same_dump = "identical symbolicated backtrace"
-
-    source_id = helpers.create_crash(
+    sig = "f" * 64
+    # First crash in the group already reviewed (its own summarize_and_tag
+    # call, or a previous cron tick, already ran).
+    helpers.create_crash(
         db_conn, "proj-ai-dup", "1.0", device_id,
-        dump=same_dump, ai_title="Watchdog fired", ai_summary="Watchdog fired in ota_manifest task.",
+        dump="dump 1", signature=sig, ai_title="Watchdog fired", ai_summary="Watchdog fired in ota_manifest task.",
     )
-    tag_id = helpers.create_tag(db_conn, "proj-ai-dup", "watchdog")
-    helpers.tag_crash(db_conn, source_id, tag_id)
+    new_id = helpers.create_crash(db_conn, "proj-ai-dup", "1.0", device_id, dump="dump 2", signature=sig)
 
-    new_id = helpers.create_crash(db_conn, "proj-ai-dup", "1.0", device_id, dump=same_dump)
-
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
+    _configure(app)
     with app.app_context():
         result = ai_tagging.summarize_and_tag(new_id, "proj-ai-dup")
 
     assert calls == []
-    # Copied verbatim - no "(Same as crash #N.)" annotation, which would
-    # otherwise compound across chains of duplicates-of-duplicates.
     assert result == {"title": "Watchdog fired", "summary": "Watchdog fired in ota_manifest task."}
 
-    with db_conn.cursor() as cur:
-        cur.execute("SELECT ai_title, ai_summary FROM crash WHERE crash_id = %s", (new_id,))
-        assert cur.fetchone() == ("Watchdog fired", "Watchdog fired in ota_manifest task.")
-        cur.execute(
-            "SELECT t.name FROM tag t JOIN crash_tag ct ON ct.tag_id = t.tag_id WHERE ct.crash_id = %s",
-            (new_id,),
-        )
-        assert cur.fetchone()[0] == "watchdog"
 
-
-def test_summarize_and_tag_reuses_signature_duplicate_without_calling_api(app, db_conn, monkeypatch):
-    """Two crashes with different (device-specific) dump text but the same
-    non-AI crash_signature.py fingerprint - the "same bug, different
-    device" case exact-dump matching can't catch."""
+def test_summarize_and_tag_different_projects_reviewed_independently(app, db_conn, monkeypatch):
+    """crash_relation is keyed by (project_name, signature) - an
+    already-reviewed group in one project must not short-circuit a fresh
+    review for the same signature string in a different project."""
     calls = []
-
-    def fail_if_called(api_key=None):
-        raise AssertionError("Anthropic client should not be constructed for a signature duplicate")
-
-    monkeypatch.setattr(ai_tagging, "Anthropic", fail_if_called)
-
-    helpers.create_project(db_conn, "proj-ai-sig", github_user="alice")
-    device_id = helpers.create_device(db_conn, "dev-ai-sig")
-    shared_signature = "a" * 64
-
-    source_id = helpers.create_crash(
-        db_conn, "proj-ai-sig", "1.0", device_id,
-        dump="device A's dump, addr 0x1111", signature=shared_signature,
-        ai_title="Watchdog fired", ai_summary="Watchdog fired in ota_manifest task.",
-    )
-    tag_id = helpers.create_tag(db_conn, "proj-ai-sig", "watchdog")
-    helpers.tag_crash(db_conn, source_id, tag_id)
-
-    new_id = helpers.create_crash(
-        db_conn, "proj-ai-sig", "1.0", device_id,
-        dump="device B's dump, addr 0x2222", signature=shared_signature,
-    )
-
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
-    with app.app_context():
-        result = ai_tagging.summarize_and_tag(new_id, "proj-ai-sig")
-
-    assert calls == []
-    assert result == {"title": "Watchdog fired", "summary": "Watchdog fired in ota_manifest task."}
-
-    with db_conn.cursor() as cur:
-        cur.execute(
-            "SELECT t.name FROM tag t JOIN crash_tag ct ON ct.tag_id = t.tag_id WHERE ct.crash_id = %s",
-            (new_id,),
-        )
-        assert cur.fetchone()[0] == "watchdog"
-
-
-def test_summarize_and_tag_ignores_duplicates_from_other_projects(app, db_conn, monkeypatch):
-    """Same dump text in a different project must not be treated as a
-    duplicate - tags are project-scoped and coincidental content matches
-    across unrelated projects shouldn't short-circuit real analysis."""
-    calls = []
-    title = "Fresh analysis"
-    description = "Fresh analysis, no duplicate found."
-    fake_response = _FakeResponse(_title_description_text(title, description))
+    fake_response = _FakeResponse(_title_description_text("Fresh title", "Fresh analysis, no duplicate found."))
     monkeypatch.setattr(
         ai_tagging, "Anthropic",
         lambda api_key=None: _FakeAnthropicClient(fake_response, calls),
     )
 
-    same_dump = "identical text, different project"
+    sig = "9" * 64
     helpers.create_project(db_conn, "proj-ai-other-a", github_user="alice")
     device_a = helpers.create_device(db_conn, "dev-ai-other-a")
     helpers.create_crash(
         db_conn, "proj-ai-other-a", "1.0", device_a,
-        dump=same_dump, ai_title="Other project title", ai_summary="Summary from a different project.",
+        dump="dump a", signature=sig, ai_title="Other project title", ai_summary="Summary from a different project.",
     )
 
     helpers.create_project(db_conn, "proj-ai-other-b", github_user="alice")
     device_b = helpers.create_device(db_conn, "dev-ai-other-b")
-    new_id = helpers.create_crash(db_conn, "proj-ai-other-b", "1.0", device_b, dump=same_dump)
+    new_id = helpers.create_crash(db_conn, "proj-ai-other-b", "1.0", device_b, dump="dump b", signature=sig)
 
-    app.config["ANTHROPIC_API_KEY"] = "sk-test"
-    app.config["MCP_PUBLIC_URL"] = "https://mcp-esp-crash.example"
-    app.config["MCP_SERVICE_TOKEN"] = "svc-token"
-
+    _configure(app)
     with app.app_context():
         result = ai_tagging.summarize_and_tag(new_id, "proj-ai-other-b")
 
     assert len(calls) == 1
-    assert result == {"title": title, "summary": description}
+    assert result == {"title": "Fresh title", "summary": "Fresh analysis, no duplicate found."}
