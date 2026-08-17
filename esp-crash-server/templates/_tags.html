@@ -1,0 +1,25 @@
+{# Tag chip - one shared look for every page that draws tags.
+
+   The dot's colour comes from the tag name via the tag_color filter (see
+   app/rendering.py), so a given tag is the same colour everywhere without
+   storing a colour per tag.
+
+   href          - wrap the label in a link (e.g. the crash list filtered by
+                   this tag). Omit for a chip that is only a label.
+   remove_action - URL to POST to for removing the tag, which adds a small
+                   "x" button. Omit on read-only pages. #}
+{% macro tag_chip(tag, href=None, remove_action=None) %}
+<span class="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1 rounded-full border border-gray-200 bg-white text-sm text-slate-700 whitespace-nowrap" title="{{ tag.description or tag.name }}">
+    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background-color: {{ tag.name | tag_color }}"></span>
+    {%- if href %}
+    <a href="{{ href }}" class="hover:underline">{{ tag.name }}</a>
+    {%- else %}
+    {{ tag.name }}
+    {%- endif %}
+    {%- if remove_action %}
+    <form method="post" action="{{ remove_action }}" class="inline leading-none">
+        <button type="submit" class="text-slate-400 hover:text-slate-700" title="Remove tag">&times;</button>
+    </form>
+    {%- endif %}
+</span>
+{%- endmacro %}

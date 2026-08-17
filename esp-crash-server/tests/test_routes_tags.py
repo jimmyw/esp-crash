@@ -1,4 +1,5 @@
 import helpers
+from app.rendering import tag_color
 
 
 def test_add_crash_tag_creates_and_redirects(client, db_conn):
@@ -151,9 +152,12 @@ def test_crash_page_shows_tag_badge(client, db_conn):
 
     resp = client.get(f"/projects/proj-t4/{crash_id}")
     assert resp.status_code == 200
-    assert b"duplicate" in resp.data
-    # Tag badges display uppercase (CSS only - stored name stays lowercase).
-    assert 'class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase' in resp.data.decode()
+    body = resp.data.decode()
+    assert "duplicate" in body
+    # Chips (templates/_tags.html) carry a dot whose colour comes from the tag
+    # name, so the same tag looks the same on every page.
+    assert f'background-color: {tag_color("duplicate")}' in body
+    assert "Dup of #1" in body  # description, as the chip's tooltip
 
 
 def test_crash_page_hides_tags_section_when_unsignatured(client, db_conn):
@@ -219,7 +223,7 @@ def test_list_project_crashes_tag_filter(client, db_conn):
     assert b"Filtered by tag" in resp.data
 
 
-def test_list_project_crashes_tags_sorted_uppercase(client, db_conn):
+def test_list_project_crashes_tags_sorted(client, db_conn):
     helpers.create_project(db_conn, "proj-t6", github_user="none")
     device_id = helpers.create_device(db_conn, "dev-t6")
     crash_id = helpers.create_crash(db_conn, "proj-t6", "1.0", device_id, signature="l" * 64)
@@ -233,8 +237,9 @@ def test_list_project_crashes_tags_sorted_uppercase(client, db_conn):
     resp = client.get("/projects/proj-t6")
     assert resp.status_code == 200
     body = resp.data.decode()
-    # Badges render lowercase tag names uppercased purely via CSS, so the
-    # underlying stored casing (and click-to-filter matching) is untouched -
-    # assert ordering on the stored names and the CSS class that uppercases them.
+    # Chips render the stored name as-is, so click-to-filter matching is
+    # untouched - assert ordering on the stored names, plus that each name got
+    # its hashed dot colour.
     assert body.index("aaataga") < body.index("mmmtagm") < body.index("zzztagz")
-    assert 'class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium uppercase' in body
+    for name in ("aaataga", "mmmtagm", "zzztagz"):
+        assert f'background-color: {tag_color(name)}' in body

@@ -5,7 +5,7 @@ for "RuntimeError: Unable to build URLs outside an active request without
 'SERVER_NAME' configured", seen in production after the cron-local-runner
 refactor moved cron() off the HTTP request path that used to supply one."""
 import helpers
-from app.rendering import external_url_for
+from app.rendering import TAG_COLORS, external_url_for, tag_color
 
 
 def test_external_url_for_works_without_a_request_context(app, monkeypatch):
@@ -67,3 +67,21 @@ def test_cron_webhook_notification_survives_without_a_request_context(app, db_co
     assert result == ("OK\n", 200)
     assert len(calls) == 1
     assert calls[0][1]["details_url"].startswith("https://esp-crash.example/")
+
+
+def test_tag_color_is_stable_and_case_insensitive():
+    """A tag's dot colour must not move between requests, workers or restarts,
+    which is why tag_color hashes with md5 rather than the salted built-in
+    hash(). Same name (any casing/padding) -> same colour, always."""
+    assert tag_color("watchdog") == tag_color("watchdog")
+    assert tag_color("Backend") == tag_color("backend") == tag_color(" BACKEND ")
+    assert tag_color("watchdog") in TAG_COLORS
+    assert tag_color(None) in TAG_COLORS  # no name at all still yields a colour
+
+
+def test_tag_color_spreads_names_over_the_palette():
+    """Distinct tags should mostly get distinct colours - not a guarantee (the
+    palette is finite, so collisions are expected), but a single-colour result
+    would mean the hash is not being used."""
+    names = ["watchdog", "ota", "mqtt", "abort", "backend", "integration-goodwe", "wifi", "heap"]
+    assert len({tag_color(n) for n in names}) >= 5

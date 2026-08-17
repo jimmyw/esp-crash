@@ -3,6 +3,8 @@ render_template wrapper, format_datetime filter, external_url_for, and the
 chunked-transfer-encoding before_request hook. Adapted to use
 flask.current_app instead of a module-global `app` (see app/auth.py for
 why)."""
+import hashlib
+
 from flask import current_app, url_for, request
 from sqlalchemy import func, select
 
@@ -12,6 +14,40 @@ from .models import Crash, ProjectAuth, db
 
 def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
     return value.strftime(format)
+
+
+# Dot colours for tag chips (see templates/_tags.html). Picked to stay
+# distinguishable from each other against the chips' white background.
+TAG_COLORS = (
+    "#ef4444",  # red
+    "#f97316",  # orange
+    "#d97706",  # amber
+    "#65a30d",  # lime
+    "#16a34a",  # green
+    "#0d9488",  # teal
+    "#0891b2",  # cyan
+    "#3b82f6",  # blue
+    "#6366f1",  # indigo
+    "#8b5cf6",  # violet
+    "#c026d3",  # fuchsia
+    "#db2777",  # pink
+    "#bc8f8f",  # rosy brown
+    "#64748b",  # slate
+    "#a16207",  # dark yellow
+    "#7c3aed",  # deep violet
+)
+
+
+def tag_color(name):
+    """Pick a tag's dot colour from its name, so the same tag is always the
+    same colour everywhere it is drawn, with no colour stored per tag.
+
+    Hashed with md5 rather than the built-in hash(), which is salted per
+    process (PYTHONHASHSEED) and would hand the same tag a different colour
+    on every worker and every restart. Case- and whitespace-insensitive so
+    "Backend" and "backend " land on one colour."""
+    key = (name or "").strip().lower().encode("utf-8")
+    return TAG_COLORS[int(hashlib.md5(key).hexdigest()[:8], 16) % len(TAG_COLORS)]
 
 
 def external_url_for(endpoint, **values):

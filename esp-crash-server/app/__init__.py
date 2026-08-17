@@ -23,7 +23,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from device_url import resolve_device_url
 
 from . import config as config_module
-from .rendering import format_datetime, handle_chunking
+from .rendering import format_datetime, handle_chunking, tag_color
 
 # templates/ lives next to server.py, one level up from this package - Flask
 # would otherwise default to looking for app/templates/ since __name__ here
@@ -49,6 +49,7 @@ def create_app():
 
     app.jinja_env.filters['format_datetime'] = format_datetime
     app.jinja_env.filters['resolve_device_url'] = resolve_device_url
+    app.jinja_env.filters['tag_color'] = tag_color
 
     github_bp = make_github_blueprint()
     app.register_blueprint(github_bp, url_prefix="/login")
