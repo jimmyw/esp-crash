@@ -4,7 +4,7 @@
 
 <div class="flex">
     <h1 class="mb-3 text-3xl leading-none text-slate-900 w-2/6">
-        Crash report <b>{{ crash.project_name }}</b> <b>#{{ crash.crash_id }}</b>
+        {{ crash.ai_title or "Crash report" }} <b>{{ crash.project_name }}</b> <b>#{{ crash.crash_id }}</b>
     </h1>
     <div class="w-4/6 flex flex-wrap justify-end items-center">
     <a href="{{ url_for('show_device', device_id=crash.device_id) }}" class="flex items-center p-4 ">
@@ -81,10 +81,6 @@
     {% endfor %}
     </div>
 </div>
-
-{% if crash.ai_title %}
-<h2 class="w-5/6 mt-4 text-xl font-semibold text-slate-900">{{ crash.ai_title }}</h2>
-{% endif %}
 
 {% if crash.ai_summary %}
 <div class="w-5/6 mt-4 p-4 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-slate-700 italic whitespace-pre-line">
