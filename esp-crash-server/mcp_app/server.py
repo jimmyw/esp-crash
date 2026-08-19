@@ -169,6 +169,19 @@ def build_app():
             return tools.delete_build(_current_user(), build_id)
 
     @mcp.tool()
+    def set_build_alias(build_id: int, alias: str) -> dict:
+        """Set the alias for one of your uploaded ELF builds."""
+        with flask_app.app_context():
+            return tools.set_build_alias(_current_user(), build_id, alias)
+
+    @mcp.tool()
+    def set_device_alias(device_id: int, alias: str) -> dict:
+        """Set the alias for a device that has appeared in a crash under one
+        of your projects."""
+        with flask_app.app_context():
+            return tools.set_device_alias(_current_user(), device_id, alias)
+
+    @mcp.tool()
     def create_project(project_name: str) -> dict:
         """Create a new project owned by your GitHub account."""
         with flask_app.app_context():
