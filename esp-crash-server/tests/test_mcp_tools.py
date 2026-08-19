@@ -153,6 +153,52 @@ def test_delete_build_scoped(app, db_conn, ctx):
         assert cur.fetchone()[0] == 0
 
 
+def test_set_build_alias_scoped(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    build_id = helpers.create_elf_file(db_conn, "proj-a", "1.0", project_alias="old")
+
+    # other user can't rename it
+    result = tools.set_build_alias("mallory", build_id, "new-alias")
+    assert result["updated"] is False
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT project_alias FROM elf_file WHERE elf_file_id = %s", (build_id,))
+        assert cur.fetchone()[0] == "old"
+
+    # owner can
+    result = tools.set_build_alias("alice", build_id, "new-alias")
+    assert result["updated"] is True
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT project_alias FROM elf_file WHERE elf_file_id = %s", (build_id,))
+        assert cur.fetchone()[0] == "new-alias"
+
+
+def test_set_device_alias_scoped(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1", alias="old")
+    helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+
+    # other user can't rename it
+    result = tools.set_device_alias("mallory", dev, "thermostat")
+    assert result["updated"] is False
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT alias FROM device WHERE device_id = %s", (dev,))
+        assert cur.fetchone()[0] == "old"
+
+    # owner can, via a crash under their project
+    result = tools.set_device_alias("alice", dev, "thermostat")
+    assert result["updated"] is True
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT alias FROM device WHERE device_id = %s", (dev,))
+        assert cur.fetchone()[0] == "thermostat"
+
+
+def test_set_device_alias_denied_for_device_with_no_accessible_crash(app, db_conn, ctx):
+    dev = helpers.create_device(db_conn, "dev-1")
+
+    result = tools.set_device_alias("alice", dev, "thermostat")
+    assert result["updated"] is False
+
+
 def test_create_project(app, db_conn, ctx):
     result = tools.create_project("alice", "new-proj")
     assert result["created"] is True

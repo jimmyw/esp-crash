@@ -225,6 +225,34 @@ def delete_build(github_user, build_id):
     return {"build_id": build_id, "deleted": res.rowcount}
 
 
+def set_build_alias(github_user, build_id, alias):
+    """Set the alias for an uploaded ELF build the caller can access.
+    updated=False if not found/forbidden."""
+    res = db.session.execute(
+        update(ElfFile)
+        .where(ElfFile.elf_file_id == build_id, ElfFile.project_name.in_(_projects_of(github_user)))
+        .values(project_alias=alias)
+    )
+    db.session.commit()
+    return {"build_id": build_id, "updated": res.rowcount > 0, "alias": alias}
+
+
+def set_device_alias(github_user, device_id, alias):
+    """Set the user-defined alias for a device the caller can access (i.e. it
+    has appeared in a crash under one of the caller's projects). updated=False
+    if not found/forbidden."""
+    res = db.session.execute(
+        update(Device)
+        .where(
+            Device.device_id == device_id,
+            Device.device_id.in_(select(Crash.device_id).where(Crash.project_name.in_(_projects_of(github_user)))),
+        )
+        .values(alias=alias)
+    )
+    db.session.commit()
+    return {"device_id": device_id, "updated": res.rowcount > 0, "alias": alias}
+
+
 def create_project(github_user, project_name):
     """Register a new project owned by the caller. created=False if the caller
     already has a project by that name."""
