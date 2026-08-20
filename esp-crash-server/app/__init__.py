@@ -11,12 +11,22 @@ registered endpoint names with the blueprint's name (e.g.
 "crashes.show_project_crash"), which would break every url_for() call in
 the existing templates - they all use bare endpoint names
 (url_for('show_project_crash', ...)) inherited from the original
-single-module server.py.
+single-module server.py. (The JSON API under app/api/ is a Blueprint -
+nothing calls bare url_for() on those endpoint names, so this concern
+doesn't apply there.)
+
+The app is an APIFlask (a thin Flask subclass) rather than plain Flask
+purely so app/api/* can use @app.input/@app.output for request validation
+and OpenAPI generation - every HTML route below behaves identically either
+way. json_errors=False keeps APIFlask's automatic JSON-ification of
+raised/aborted HTTP errors scoped to the API surface (see
+app/api/errors.py's docstring for why that's safe): plain flask.abort()
+and Flask's own 404/405 pages on these HTML routes are unaffected.
 """
 import logging
 import os
 
-from flask import Flask
+from apiflask import APIFlask
 from flask_dance.contrib.github import make_github_blueprint
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -37,7 +47,14 @@ def create_app():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    app = Flask(__name__, template_folder=_TEMPLATE_FOLDER)
+    app = APIFlask(
+        __name__,
+        template_folder=_TEMPLATE_FOLDER,
+        title="ESP Crash API",
+        docs_path="/api/v1/docs",
+        spec_path="/api/v1/openapi.json",
+        json_errors=False,
+    )
     app.wsgi_app = ProxyFix(
         app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1
     )
@@ -60,5 +77,8 @@ def create_app():
 
     for module in (core, projects, crashes, builds, devices, slack, ingest, cron, tags):
         module.register(app)
+
+    from .api import register_api
+    register_api(app)
 
     return app

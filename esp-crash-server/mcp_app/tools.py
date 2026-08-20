@@ -16,8 +16,12 @@ import datetime
 from sqlalchemy import delete, func, insert, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.models import Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ProjectAuth, Tag, db
+from app.models import (
+    Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ProjectAuth,
+    ProjectSettings, ProjectSlackIntegration, ProjectWebhook, Tag, db,
+)
 from app.tags import find_or_create_tag
+from device_url import device_url_template_is_valid
 
 
 def _projects_of(github_user):
@@ -311,7 +315,10 @@ def add_tag_to_crash(github_user, crash_id, tag_name, tag_description=None):
     tag_row = db.session.execute(
         select(Tag.tag_id, Tag.name, Tag.description).where(Tag.tag_id == tag_id)
     ).mappings().first()
-    return {"crash_id": crash_id, "added": True, "tag": _serialize(tag_row)}
+    return {
+        "crash_id": crash_id, "added": True, "tag": _serialize(tag_row),
+        "project_name": crash_row["project_name"], "signature": crash_row["signature"],
+    }
 
 
 def remove_tag_from_crash(github_user, crash_id, tag_id):
@@ -334,4 +341,324 @@ def remove_tag_from_crash(github_user, crash_id, tag_id):
         )
     )
     db.session.commit()
-    return {"crash_id": crash_id, "tag_id": tag_id, "removed": res.rowcount > 0}
+    return {
+        "crash_id": crash_id, "tag_id": tag_id, "removed": res.rowcount > 0,
+        "project_name": crash_row["project_name"], "signature": crash_row["signature"],
+    }
+
+
+def reload_crash_summary(github_user, crash_id):
+    """Clear the stored AI title/summary on this crash's relation so the
+    next cron tick regenerates them - affects every crash sharing this
+    signature, since the review is owned by the whole group (see
+    app/ai_tagging.py), not this crash alone. reloaded=False if the crash
+    has no signature (no relation) or the caller lacks access. Mirrors
+    app/routes/crashes.py:reload_crash_summary."""
+    crash_row = db.session.execute(
+        select(Crash.project_name, Crash.signature).where(
+            Crash.crash_id == crash_id, Crash.project_name.in_(_projects_of(github_user))
+        )
+    ).mappings().first()
+    if crash_row is None or crash_row["signature"] is None:
+        return {"crash_id": crash_id, "reloaded": False}
+    db.session.execute(
+        update(CrashRelation)
+        .where(CrashRelation.project_name == crash_row["project_name"], CrashRelation.signature == crash_row["signature"])
+        .values(ai_title=None, ai_summary=None)
+    )
+    db.session.commit()
+    return {
+        "crash_id": crash_id, "reloaded": True,
+        "project_name": crash_row["project_name"], "signature": crash_row["signature"],
+    }
+
+
+def list_relations(github_user, project_name, limit=50, offset=0):
+    """One row per (project_name, signature) crash_relation the caller can
+    access, most recently seen first: ai_title, crash_count, last_seen,
+    tags, and every firmware version the group was seen on. A de-duplicated
+    companion to list_crashes - groups crashes likely to be the same bug.
+    Mirrors app/routes/projects.py:list_project_relations."""
+    base_conditions = [
+        CrashRelation.project_name == project_name,
+        Crash.project_name.in_(_projects_of(github_user)),
+    ]
+
+    full_count = db.session.execute(
+        select(func.count(func.distinct(CrashRelation.signature)))
+        .select_from(CrashRelation)
+        .join(Crash, (Crash.project_name == CrashRelation.project_name) & (Crash.signature == CrashRelation.signature))
+        .where(*base_conditions)
+    ).scalar_one()
+
+    relations = db.session.execute(
+        select(
+            CrashRelation.signature, CrashRelation.ai_title,
+            func.count(func.distinct(Crash.crash_id)).label("crash_count"),
+            func.max(Crash.date).label("last_seen"),
+        )
+        .select_from(CrashRelation)
+        .join(Crash, (Crash.project_name == CrashRelation.project_name) & (Crash.signature == CrashRelation.signature))
+        .where(*base_conditions)
+        .group_by(CrashRelation.signature, CrashRelation.ai_title)
+        .order_by(func.max(Crash.date).desc())
+        .limit(int(limit))
+        .offset(int(offset))
+    ).mappings().all()
+
+    signatures = [r["signature"] for r in relations]
+    tags_by_signature = {}
+    if signatures:
+        tag_rows = db.session.execute(
+            select(CrashRelationTag.signature, Tag.tag_id, Tag.name, Tag.description)
+            .join(Tag, Tag.tag_id == CrashRelationTag.tag_id)
+            .where(CrashRelationTag.project_name == project_name, CrashRelationTag.signature.in_(signatures))
+            .order_by(Tag.name)
+        ).mappings().all()
+        for t in tag_rows:
+            tags_by_signature.setdefault(t["signature"], []).append(
+                {"tag_id": t["tag_id"], "name": t["name"], "description": t["description"]}
+            )
+
+    versions_by_signature = {}
+    if signatures:
+        version_rows = db.session.execute(
+            select(
+                Crash.signature, Crash.project_ver,
+                func.count(func.distinct(Crash.crash_id)).label("crash_count"),
+                func.array_agg(func.distinct(ElfFile.project_alias)).label("project_alias"),
+            )
+            .select_from(Crash)
+            .outerjoin(ElfFile, (Crash.project_name == ElfFile.project_name) & (Crash.project_ver == ElfFile.project_ver))
+            .where(Crash.project_name == project_name, Crash.signature.in_(signatures))
+            .group_by(Crash.signature, Crash.project_ver)
+            .order_by(func.max(Crash.date).desc())
+        ).mappings().all()
+        for v in version_rows:
+            versions_by_signature.setdefault(v["signature"], []).append({
+                "project_ver": v["project_ver"], "crash_count": v["crash_count"], "project_alias": v["project_alias"],
+            })
+
+    items = [
+        dict(_serialize(r), tags=tags_by_signature.get(r["signature"], []), versions=versions_by_signature.get(r["signature"], []))
+        for r in relations
+    ]
+    return {"items": items, "limit": int(limit), "offset": int(offset), "full_count": full_count}
+
+
+def _project_allowed(github_user, project_name):
+    """True iff github_user has a project_auth grant for project_name - the
+    gate used by every project-settings function below (ACL, webhooks,
+    device-url-template, Slack), matching the "Forbidden" checks in
+    app/routes/projects.py / app/routes/slack.py."""
+    return db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, ProjectAuth.github == github_user)
+    ).first() is not None
+
+
+def list_acl(github_user, project_name):
+    """Access-control rows (github + grant date) for a project the caller
+    can access. None if the caller lacks access."""
+    if not _project_allowed(github_user, project_name):
+        return None
+    rows = db.session.execute(
+        select(ProjectAuth.github, ProjectAuth.date)
+        .where(ProjectAuth.project_name == project_name)
+        .order_by(ProjectAuth.date.desc())
+    ).mappings().all()
+    return [_serialize(r) for r in rows]
+
+
+def add_acl(github_user, project_name, github):
+    """Grant a GitHub user access to a project the caller already has
+    access to (mirrors app/routes/projects.py:create_acl - the caller must
+    already hold a grant, not just have the project exist)."""
+    if not _project_allowed(github_user, project_name):
+        return {"added": False, "reason": "forbidden"}
+    if not github:
+        return {"added": False, "reason": "missing github"}
+    exists = db.session.execute(
+        select(ProjectAuth.github)
+        .where(ProjectAuth.project_name == project_name, ProjectAuth.github == github)
+    ).first()
+    if exists:
+        return {"added": False, "reason": "already exists"}
+    db.session.execute(
+        insert(ProjectAuth).values(date=func.now(), project_name=project_name, github=github)
+    )
+    db.session.commit()
+    return {"added": True, "project_name": project_name, "github": github}
+
+
+def remove_acl(github_user, project_name, github):
+    """Revoke a GitHub user's access to a project. removed=False if the
+    caller lacks access to the project (scoped like
+    app/routes/projects.py:delete_acl)."""
+    res = db.session.execute(
+        delete(ProjectAuth).where(
+            ProjectAuth.github == github,
+            ProjectAuth.project_name == project_name,
+            ProjectAuth.project_name.in_(_projects_of(github_user)),
+        )
+    )
+    db.session.commit()
+    return {"removed": res.rowcount > 0, "project_name": project_name, "github": github}
+
+
+def list_webhooks(github_user, project_name):
+    """Webhook URLs registered for a project the caller can access. None if
+    the caller lacks access."""
+    if not _project_allowed(github_user, project_name):
+        return None
+    rows = db.session.execute(
+        select(ProjectWebhook.webhook_id, ProjectWebhook.webhook_url)
+        .where(ProjectWebhook.project_name == project_name)
+        .order_by(ProjectWebhook.webhook_id)
+    ).mappings().all()
+    return [_serialize(r) for r in rows]
+
+
+def add_webhook(github_user, project_name, webhook_url):
+    """Register a new webhook URL for a project the caller can access.
+    Mirrors the `action=add` branch of
+    app/routes/projects.py:project_webhooks_admin."""
+    if not _project_allowed(github_user, project_name):
+        return {"added": False, "reason": "forbidden"}
+    if not webhook_url:
+        return {"added": False, "reason": "missing webhook_url"}
+    existing = db.session.execute(
+        select(ProjectWebhook.webhook_id)
+        .where(ProjectWebhook.project_name == project_name, ProjectWebhook.webhook_url == webhook_url)
+    ).first()
+    if existing:
+        return {"added": False, "reason": "already exists"}
+    webhook_id = db.session.execute(
+        insert(ProjectWebhook).values(project_name=project_name, webhook_url=webhook_url)
+        .returning(ProjectWebhook.webhook_id)
+    ).scalar_one()
+    db.session.commit()
+    return {"added": True, "webhook_id": webhook_id, "webhook_url": webhook_url}
+
+
+def remove_webhook(github_user, project_name, webhook_id):
+    """Remove a webhook from a project the caller can access. Mirrors the
+    `action=delete` branch of
+    app/routes/projects.py:project_webhooks_admin."""
+    if not _project_allowed(github_user, project_name):
+        return {"removed": False, "reason": "forbidden"}
+    res = db.session.execute(
+        delete(ProjectWebhook).where(
+            ProjectWebhook.webhook_id == webhook_id, ProjectWebhook.project_name == project_name
+        )
+    )
+    db.session.commit()
+    return {"removed": res.rowcount > 0, "webhook_id": webhook_id}
+
+
+def get_device_url_template(github_user, project_name):
+    """The per-project device-id URL template (see device_url.py). None if
+    the caller lacks access to the project."""
+    if not _project_allowed(github_user, project_name):
+        return None
+    row = db.session.execute(
+        select(ProjectSettings.device_url_template).where(ProjectSettings.project_name == project_name)
+    ).mappings().first()
+    return {"project_name": project_name, "device_url_template": row["device_url_template"] if row else None}
+
+
+def set_device_url_template(github_user, project_name, template):
+    """Set (or clear, with a blank template) the per-project device-id URL
+    template. Validated by device_url.device_url_template_is_valid - same
+    guard as app/routes/projects.py:project_device_url_admin."""
+    if not _project_allowed(github_user, project_name):
+        return {"updated": False, "reason": "forbidden"}
+    template = (template or "").strip()
+    if not device_url_template_is_valid(template):
+        return {"updated": False, "reason": "invalid_template"}
+    stmt = pg_insert(ProjectSettings).values(project_name=project_name, device_url_template=(template or None))
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["project_name"], set_={"device_url_template": stmt.excluded.device_url_template}
+    )
+    db.session.execute(stmt)
+    db.session.commit()
+    return {"updated": True, "project_name": project_name, "device_url_template": template or None}
+
+
+def get_project_settings(github_user, project_name):
+    """Composite read for a project settings screen: ACL + webhooks + Slack
+    integrations + device-url-template in one call, gated by a single
+    initial access check (the atomic functions above still each re-check,
+    which is fine off the hot path). None if the caller lacks access."""
+    if not _project_allowed(github_user, project_name):
+        return None
+    return {
+        "project_name": project_name,
+        "acl": list_acl(github_user, project_name),
+        "webhooks": list_webhooks(github_user, project_name),
+        "slack_integrations": list_slack_integrations(github_user, project_name),
+        "device_url_template": get_device_url_template(github_user, project_name)["device_url_template"],
+    }
+
+
+def get_device(github_user, device_id):
+    """A device the caller can access - i.e. it has appeared in a crash
+    under one of the caller's projects (same access rule as
+    set_device_alias). None if missing/forbidden."""
+    row = db.session.execute(
+        select(Device.device_id, Device.ext_device_id, Device.alias)
+        .where(
+            Device.device_id == device_id,
+            Device.device_id.in_(select(Crash.device_id).where(Crash.project_name.in_(_projects_of(github_user)))),
+        )
+    ).mappings().first()
+    return _serialize(row) if row is not None else None
+
+
+def list_slack_integrations(github_user, project_name):
+    """Slack integrations for a project the caller can access - never
+    includes slack_access_token. None if the caller lacks access."""
+    if not _project_allowed(github_user, project_name):
+        return None
+    rows = db.session.execute(
+        select(
+            ProjectSlackIntegration.slack_integration_id, ProjectSlackIntegration.slack_team_id,
+            ProjectSlackIntegration.slack_team_name, ProjectSlackIntegration.slack_channel_id,
+            ProjectSlackIntegration.slack_channel_name, ProjectSlackIntegration.created_date,
+        )
+        .where(ProjectSlackIntegration.project_name == project_name)
+        .order_by(ProjectSlackIntegration.created_date.desc())
+    ).mappings().all()
+    return [_serialize(r) for r in rows]
+
+
+def remove_slack_integration(github_user, project_name, integration_id):
+    """Delete a Slack integration. Scoped like
+    app/routes/slack.py:delete_slack_integration - by project_auth
+    membership, since this table has no github column of its own."""
+    res = db.session.execute(
+        delete(ProjectSlackIntegration).where(
+            ProjectSlackIntegration.slack_integration_id == integration_id,
+            ProjectSlackIntegration.project_name == project_name,
+            ProjectSlackIntegration.project_name.in_(_projects_of(github_user)),
+        )
+    )
+    db.session.commit()
+    return {"removed": res.rowcount > 0, "integration_id": integration_id}
+
+
+def set_slack_channel(github_user, project_name, integration_id, channel_id, channel_name):
+    """Update the channel for an existing Slack integration. No current
+    HTML UI entry point (app/routes/slack.py:update_slack_channel is
+    routed but unlinked) but trivial to carry forward for API completeness."""
+    res = db.session.execute(
+        update(ProjectSlackIntegration)
+        .where(
+            ProjectSlackIntegration.slack_integration_id == integration_id,
+            ProjectSlackIntegration.project_name == project_name,
+            ProjectSlackIntegration.project_name.in_(_projects_of(github_user)),
+        )
+        .values(slack_channel_id=channel_id, slack_channel_name=channel_name)
+    )
+    db.session.commit()
+    return {"updated": res.rowcount > 0, "integration_id": integration_id}

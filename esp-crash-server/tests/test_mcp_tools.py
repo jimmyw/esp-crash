@@ -398,3 +398,170 @@ def test_delete_crash_does_not_remove_relation_tags(app, db_conn, ctx):
     with db_conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM tag WHERE tag_id = %s", (tag_id,))
         assert cur.fetchone()[0] == 1
+
+
+def test_add_tag_to_crash_includes_relation_key(app, db_conn, ctx):
+    """The tag fan-out (tags belong to (project_name, signature), not
+    crash_id) must be explicit in the response, not just implicit DB
+    behavior - see mcp_app/tools.py:add_tag_to_crash."""
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    sig = "k" * 64
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig)
+
+    result = tools.add_tag_to_crash("alice", crash_id, "wontfix")
+    assert result["project_name"] == "proj-a"
+    assert result["signature"] == sig
+
+    remove_result = tools.remove_tag_from_crash("alice", crash_id, result["tag"]["tag_id"])
+    assert remove_result["project_name"] == "proj-a"
+    assert remove_result["signature"] == sig
+
+
+def test_reload_crash_summary_clears_for_whole_group(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    sig = "l" * 64
+    crash_1 = helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig, ai_title="Old title", ai_summary="Old summary")
+    helpers.create_crash(db_conn, "proj-a", "1.1", dev, signature=sig)
+
+    result = tools.reload_crash_summary("alice", crash_1)
+    assert result["reloaded"] is True
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT ai_title, ai_summary FROM crash_relation WHERE project_name = %s AND signature = %s", ("proj-a", sig))
+        assert cur.fetchone() == (None, None)
+
+
+def test_reload_crash_summary_noop_without_signature_or_access(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1")
+    crash_id = helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+
+    assert tools.reload_crash_summary("alice", crash_id)["reloaded"] is False
+    assert tools.reload_crash_summary("mallory", crash_id)["reloaded"] is False
+
+
+def test_list_relations_scoped(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    helpers.create_project(db_conn, "proj-b", github_user="bob")
+    dev = helpers.create_device(db_conn, "dev-1")
+    sig_a = "m" * 64
+    helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig_a, ai_title="Bug A")
+    helpers.create_crash(db_conn, "proj-a", "1.0", dev, signature=sig_a)
+    sig_b = "n" * 64
+    helpers.create_crash(db_conn, "proj-b", "1.0", dev, signature=sig_b)
+
+    result = tools.list_relations("alice", "proj-a")
+    assert result["full_count"] == 1
+    assert [r["signature"] for r in result["items"]] == [sig_a]
+    assert result["items"][0]["crash_count"] == 2
+    assert result["items"][0]["ai_title"] == "Bug A"
+
+    # bob's project is invisible to alice even when named directly
+    assert tools.list_relations("alice", "proj-b")["items"] == []
+
+
+def test_acl_list_add_remove(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+
+    assert tools.list_acl("mallory", "proj-a") is None
+
+    acl = tools.list_acl("alice", "proj-a")
+    assert [a["github"] for a in acl] == ["alice"]
+
+    assert tools.add_acl("mallory", "proj-a", "carol")["added"] is False
+    added = tools.add_acl("alice", "proj-a", "carol")
+    assert added["added"] is True
+    assert tools.add_acl("alice", "proj-a", "carol")["reason"] == "already exists"
+
+    assert tools.remove_acl("mallory", "proj-a", "carol")["removed"] is False
+    assert tools.remove_acl("alice", "proj-a", "carol")["removed"] is True
+    assert [a["github"] for a in tools.list_acl("alice", "proj-a")] == ["alice"]
+
+
+def test_webhooks_list_add_remove(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+
+    assert tools.list_webhooks("mallory", "proj-a") is None
+    assert tools.list_webhooks("alice", "proj-a") == []
+
+    added = tools.add_webhook("alice", "proj-a", "https://example.com/hook")
+    assert added["added"] is True
+    assert tools.add_webhook("alice", "proj-a", "https://example.com/hook")["reason"] == "already exists"
+    assert tools.add_webhook("mallory", "proj-a", "https://evil.example/hook")["added"] is False
+
+    webhooks = tools.list_webhooks("alice", "proj-a")
+    assert [w["webhook_url"] for w in webhooks] == ["https://example.com/hook"]
+
+    assert tools.remove_webhook("mallory", "proj-a", added["webhook_id"])["removed"] is False
+    assert tools.remove_webhook("alice", "proj-a", added["webhook_id"])["removed"] is True
+    assert tools.list_webhooks("alice", "proj-a") == []
+
+
+def test_device_url_template_get_set_validates(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+
+    assert tools.get_device_url_template("mallory", "proj-a") is None
+    assert tools.get_device_url_template("alice", "proj-a")["device_url_template"] is None
+
+    bad = tools.set_device_url_template("alice", "proj-a", "not-a-url")
+    assert bad["updated"] is False
+    assert bad["reason"] == "invalid_template"
+
+    good = tools.set_device_url_template("alice", "proj-a", "https://iot.example/{device_id}")
+    assert good["updated"] is True
+    assert tools.get_device_url_template("alice", "proj-a")["device_url_template"] == "https://iot.example/{device_id}"
+
+    # blank clears it
+    cleared = tools.set_device_url_template("alice", "proj-a", "")
+    assert cleared["updated"] is True
+    assert tools.get_device_url_template("alice", "proj-a")["device_url_template"] is None
+
+    assert tools.set_device_url_template("mallory", "proj-a", "https://x/{device_id}")["updated"] is False
+
+
+def test_get_project_settings_composite(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    helpers.create_webhook(db_conn, "proj-a", "https://example.com/hook")
+    helpers.create_slack_integration(db_conn, "proj-a")
+    tools.set_device_url_template("alice", "proj-a", "https://iot.example/{device_id}")
+
+    assert tools.get_project_settings("mallory", "proj-a") is None
+
+    settings = tools.get_project_settings("alice", "proj-a")
+    assert [a["github"] for a in settings["acl"]] == ["alice"]
+    assert len(settings["webhooks"]) == 1
+    assert len(settings["slack_integrations"]) == 1
+    assert "slack_access_token" not in settings["slack_integrations"][0]
+    assert settings["device_url_template"] == "https://iot.example/{device_id}"
+
+
+def test_get_device_scoped(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    dev = helpers.create_device(db_conn, "dev-1", alias="thermostat")
+    helpers.create_crash(db_conn, "proj-a", "1.0", dev)
+
+    assert tools.get_device("mallory", dev) is None
+    device = tools.get_device("alice", dev)
+    assert device["ext_device_id"] == "dev-1"
+    assert device["alias"] == "thermostat"
+
+
+def test_slack_integrations_list_remove_set_channel(app, db_conn, ctx):
+    helpers.create_project(db_conn, "proj-a", github_user="alice")
+    integration_id = helpers.create_slack_integration(db_conn, "proj-a", slack_channel_name="general")
+
+    assert tools.list_slack_integrations("mallory", "proj-a") is None
+    integrations = tools.list_slack_integrations("alice", "proj-a")
+    assert [i["slack_channel_name"] for i in integrations] == ["general"]
+
+    updated = tools.set_slack_channel("alice", "proj-a", integration_id, "C999", "random")
+    assert updated["updated"] is True
+    assert tools.list_slack_integrations("alice", "proj-a")[0]["slack_channel_name"] == "random"
+
+    assert tools.set_slack_channel("mallory", "proj-a", integration_id, "C111", "other")["updated"] is False
+
+    assert tools.remove_slack_integration("mallory", "proj-a", integration_id)["removed"] is False
+    assert tools.remove_slack_integration("alice", "proj-a", integration_id)["removed"] is True
+    assert tools.list_slack_integrations("alice", "proj-a") == []
