@@ -1,91 +1,84 @@
 """Turn a stored crash into a directory a jailed debugger can open.
 
-Everything gdb needs is already in Postgres as bz2-compressed BYTEA - the raw
-crash dump, the build ELF, and the debug symbols for any runtime-loaded
-modules. There is no object store and no bundle: a session's work directory is
-built here, straight from those blobs.
+Everything a debugger needs is already in Postgres as bz2-compressed BYTEA -
+the raw crash artifact, the build ELF, and debug symbols for any
+runtime-loaded modules. There is no object store and no bundle: a session's
+work directory is built here, straight from those blobs.
 
 The split of responsibility matters. This module runs in the *service* process,
 which holds the database credentials; the jails it drives have `--unshare-net`
-and see only the work directory, so the debugger never has database access or
-a network. That is the whole reason materialization happens here rather than
+and see only the work directory, so the debugger never has database access or a
+network. That is the whole reason materialization happens here rather than
 inside the sandbox.
 
-The pipeline mirrors what `app/routes/crashes.py:download_crash` assembles for
-offline debugging and what `app/routes/cron.py` does for the stored backtrace,
-and it reuses the same helpers from `decode_module_coredump` so the gdb command
-formats live in exactly one place.
+What each step *does* comes from the toolchain descriptor, not from this file.
+Nothing here knows what Espressif is, what a coredump partition image is, or
+that the debugger is gdb: it renders the descriptor's commands and runs them in
+the right jail tier. A target whose artifact is already a core file declares no
+`core` phase; one with no runtime modules declares no `modules` section; and
+both work without a branch here.
 """
 import bz2
 import os
 import re
+import shutil
 
-import decode_module_coredump as mod_decoder
-
-from . import converters, jail
+from gdb_app import jail, modreg
 
 # Names inside the work directory (which is bound at /work in the jail, so
-# these double as the jail-relative paths handed to gdb).
+# these double as the jail-relative paths handed to the debugger).
 DUMP = "core.dmp"
 PROG = "prog.elf"
 CORE = "core.elf"
-GDBINIT = "module_symbols.gdbinit"
+SYMBOLS_FILE = "module_symbols.gdbinit"
 MODULE_DIR = "modules"
 
-# Module names come out of an attacker-influenced coredump and become path
-# components, so they are reduced to a known-safe alphabet - the same guard
-# app/routes/crashes.py:221 applies before putting one in a zip entry name.
+# Module names come out of an attacker-influenced artifact and become path
+# components, so they are reduced to a known-safe alphabet.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+# Registry protocols this server can drive. A descriptor names one; resolving a
+# name must not become an arbitrary import.
+REGISTRY_PROTOCOLS = {"esp_crash_modmap"}
 
 
 class NotDebuggable(Exception):
     """The crash cannot be debugged, with a reason meant for the user.
 
-    Distinct from an internal error: every case here is a legitimate state of
-    the data (no build uploaded yet, no toolchain configured) that the person
-    asking can usually act on, so the message is written for them.
+    Distinct from an internal error: every case is a legitimate state of the
+    data (no build uploaded, no toolchain configured, an artifact that will not
+    convert) that the person asking can usually act on, so the message is
+    written for them.
     """
 
 
 def maybe_bunzip(blob):
     """Normalise a stored blob. Rows are bz2-compressed, but historically some
     were stored raw, so every read path in this codebase tries decompression
-    and falls back - see app/routes/cron.py and download_crash."""
+    and falls back."""
     try:
         return bz2.decompress(blob)
     except (IOError, OSError, ValueError):
         return blob
 
 
-def _write(work, name, data, gid):
-    path = os.path.join(work, name)
-    with open(path, "wb") as f:
-        f.write(data)
-    grant_to_session(path, gid)
-    return path
-
-
 def grant_to_session(path, gid):
     """Make `path` readable by the session's jail, keeping root as owner.
 
-    Explicit rather than inherited: a setgid work directory would be the tidier
-    mechanism, but the service holds no CAP_FSETID (it runs with almost every
-    capability dropped), so the kernel strips the setgid bit and files silently
-    land in group root - where the jail, running as the session uid, cannot
-    read them. The symptom is gdb reporting "No such file or directory" for a
-    file that is plainly there.
+    Explicit rather than inherited: a setgid work directory would be tidier,
+    but the service holds no CAP_FSETID, so the kernel strips the setgid bit and
+    files silently land in group root - where the jail, running as the session
+    uid, cannot read them. The symptom is the debugger reporting "No such file
+    or directory" for a file that is plainly there.
     """
     os.chown(path, 0, gid)
     os.chmod(path, 0o750 if os.path.isdir(path) else 0o640)
 
 
 def grant_tree_to_session(root, gid):
-    """Apply `grant_to_session` to everything under `root` still owned by us.
-
-    Covers files a converter produced in the service process (the passthrough
-    converter copies rather than executing anything). Files a *jailed*
-    converter created already belong to the session uid and are left alone.
-    """
+    """Apply `grant_to_session` to everything under `root` still owned by us -
+    covering files a conversion step produced in the service process. Files a
+    *jailed* step created already belong to the session uid."""
     for dirpath, dirnames, filenames in os.walk(root):
         for name in list(dirnames) + list(filenames):
             path = os.path.join(dirpath, name)
@@ -96,119 +89,190 @@ def grant_tree_to_session(root, gid):
                 pass
 
 
+def _write(work, name, data, gid):
+    path = os.path.join(work, name)
+    with open(path, "wb") as f:
+        f.write(data)
+    grant_to_session(path, gid)
+    return path
+
+
 class Prepared:
-    """The result of materialization: the argv to run in the session jail, plus
-    log lines describing what symbols were and were not available."""
+    """The result of materialization.
 
-    def __init__(self, argv, log, modules):
+    The three text fields are kept apart rather than concatenated into one log,
+    because callers want different things: an interactive session shows the
+    symbolicated report as its preamble, while the batch decode stores it. A
+    single list forced callers to depend on element order.
+    """
+
+    def __init__(self, argv, convert_log="", module_notes=(), report="", modules=()):
         self.argv = argv
-        self.log = log
-        self.modules = modules
+        self.convert_log = convert_log
+        self.module_notes = tuple(module_notes)
+        self.report = report
+        self.modules = list(modules)
+
+    def preamble(self):
+        """What to show before handing over an interactive terminal: which
+        module symbols resolved, then the report itself. Falls back to the
+        conversion output when a toolchain declares no report phase."""
+        parts = list(self.module_notes)
+        parts.append(self.report or self.convert_log)
+        return "".join(p if p.endswith("\n") else p + "\n" for p in parts if p.strip())
 
 
-def prepare(artifacts, toolchain, lease, get_module_elf, convert_timeout=180):
-    """Populate `lease.workdir` and return a `Prepared` for the session jail.
+def prepare(artifacts, toolchain, lease, get_module_elf):
+    """Populate `lease.workdir` and return a `Prepared`.
 
     `get_module_elf(sha1) -> bytes | None` is injected rather than imported so
     this module needs no Flask app context of its own: the caller already holds
     one for the ACL-scoped lookups.
     """
     work = lease.workdir
-    log = []
 
     if not artifacts.get("dump"):
         raise NotDebuggable("This crash has no dump data stored.")
-    if not artifacts.get("prog"):
+    if "prog" in (toolchain.requires or ()) and not artifacts.get("prog"):
         raise NotDebuggable(
             f"No build (ELF) has been uploaded for {artifacts['project_name']} "
             f"version {artifacts['project_ver']}, so there are no symbols to "
             f"debug with.")
 
     _write(work, DUMP, maybe_bunzip(artifacts["dump"]), lease.gid)
-    _write(work, PROG, maybe_bunzip(artifacts["prog"]), lease.gid)
+    if artifacts.get("prog"):
+        _write(work, PROG, maybe_bunzip(artifacts["prog"]), lease.gid)
 
-    # --- conversion tier: parse the untrusted artifact into a core gdb can open
-    converter = converters.get(toolchain.converter)
-    convert_spec = jail.JailSpec(
-        toolchain=toolchain, workdir=work, uid=lease.uid, gid=lease.gid,
-        tier=jail.CONVERT, extra_ro=converter.extra_ro_binds(),
-    )
+    subst = {
+        "root": toolchain.root or "",
+        "debugger": toolchain.exe,
+        "python": toolchain.python or "",
+        "dump": DUMP, "prog": PROG, "core": CORE,
+        "symbols_file": SYMBOLS_FILE, "work": jail.WORK,
+    }
 
-    def run_convert(command, timeout=convert_timeout):
-        return jail.run_batch(convert_spec, command, timeout=timeout)
+    convert = _spec(toolchain, work, lease, jail.CONVERT)
+    convert_log = _make_core(toolchain, subst, convert, work, lease)
 
-    log.append(converter.convert(run_convert, toolchain, DUMP, PROG, CORE, work=work))
+    modules, notes = _load_modules(toolchain, subst, work, lease, get_module_elf)
+
+    report = _make_report(toolchain, subst, convert, convert_log, modules)
+
+    argv = toolchain.render(toolchain.interactive, subst,
+                            with_symbols=bool(modules))[0]
+    return Prepared(argv, convert_log=convert_log, module_notes=notes,
+                    report=report, modules=modules)
+
+
+def _spec(toolchain, work, lease, tier):
+    return jail.JailSpec(toolchain=toolchain, workdir=work,
+                         uid=lease.uid, gid=lease.gid, tier=tier)
+
+
+def _make_core(toolchain, subst, convert, work, lease):
+    """Produce the file the debugger opens.
+
+    A toolchain that declares no `core` phase is saying its artifact already is
+    that file - which is what the old `passthrough` converter was, now expressed
+    as an absence rather than a plugin.
+    """
+    if toolchain.core is None:
+        shutil.copyfile(os.path.join(work, DUMP), os.path.join(work, CORE))
+        grant_to_session(os.path.join(work, CORE), lease.gid)
+        return "# artifact used directly as a core file (no conversion needed)\n"
+
+    log = ""
+    for argv in toolchain.render(toolchain.core, subst):
+        result = jail.run_batch(convert, argv, timeout=toolchain.core.timeout)
+        log += (result.stdout or b"").decode("utf-8", "replace")
     grant_tree_to_session(work, lease.gid)
+
     if not os.path.exists(os.path.join(work, CORE)):
         raise NotDebuggable(
-            "The crash dump could not be converted into a core file. "
-            "It may be truncated or from an incompatible firmware version.\n\n"
-            + "".join(log))
-
-    # --- session tier from here on: plain gdb, no interpreter, no converter
-    session_spec = jail.JailSpec(
-        toolchain=toolchain, workdir=work, uid=lease.uid, gid=lease.gid,
-        tier=jail.SESSION,
-    )
-
-    modules = _load_modules(session_spec, toolchain, work, get_module_elf, log,
-                            lease.gid)
-
-    argv = [toolchain.exe, "-nx", "-q", PROG, "-ex", f"core-file {CORE}"]
-    if modules:
-        argv += ["-x", GDBINIT]
-    return Prepared(argv, log, modules)
+            "The crash dump could not be converted into a core file. It may be "
+            "truncated, or from a firmware version this toolchain cannot read."
+            "\n\n" + log)
+    return log
 
 
-def _load_modules(session_spec, toolchain, work, get_module_elf, log, gid):
-    """Read the on-device module registry out of the core and stage debug
-    symbols for every module we have them for.
+def _make_report(toolchain, subst, convert, convert_log, modules):
+    """Produce the human-readable report.
 
-    Best-effort by design: a firmware that loads no modules has no `s_mod_map`
-    symbol and `read_registry` returns an empty list, and a module whose
-    symbols were never uploaded simply keeps unresolved frames. Neither is a
-    reason to refuse a session - the main backtrace is still useful.
+    A second pass can only do something the conversion pass could not: resolve
+    module frames. So it is skipped when no module symbols were staged - its
+    output would be the conversion pass's own bytes, arrived at again over
+    several seconds. The batch decode has always made this distinction, and most
+    crashes have no runtime modules at all.
+
+    When modules *are* staged the pass runs, even though it sometimes still
+    produces identical text - a crash whose frames all fall in the main
+    application needs none of the module symbols. There is no way to know that
+    without symbolicating, so the cost is inherent rather than wasteful.
     """
-    def runner(commands):
-        """Execute gdb commands against (PROG, CORE) inside the session jail.
+    if toolchain.report is None:
+        return convert_log
+    if not modules and toolchain.core is not None:
+        return convert_log
 
-        Passed to read_registry so the two-pass `printf` line protocol it
-        implements is reused rather than reimplemented here.
-        """
-        argv = [toolchain.exe, "-batch", "-nx", PROG, "-ex", f"core-file {CORE}"]
-        for c in commands:
-            argv += ["-ex", c]
-        result = jail.run_batch(session_spec, argv, timeout=120)
+    report = ""
+    for argv in toolchain.render(toolchain.report, subst, with_symbols=bool(modules)):
+        result = jail.run_batch(convert, argv, timeout=toolchain.report.timeout)
+        report += (result.stdout or b"").decode("utf-8", "replace")
+    return report
+
+
+def _load_modules(toolchain, subst, work, lease, get_module_elf):
+    """Read the on-device module registry and stage symbols for every module we
+    have them for.
+
+    Best-effort by design. A toolchain that declares no `modules` section skips
+    this entirely; a firmware that loads none has no registry symbol and yields
+    an empty list; a module whose symbols were never uploaded simply keeps
+    unresolved frames. None of those is a reason to refuse a session - the main
+    backtrace is still useful.
+    """
+    spec = toolchain.modules
+    if spec is None:
+        return [], ()
+    if spec.registry not in REGISTRY_PROTOCOLS:
+        return [], (f"# unknown module registry protocol {spec.registry!r}; "
+                    f"module symbols not resolved\n",)
+
+    session = _spec(toolchain, work, lease, jail.SESSION)
+    batch = [a.format(**subst) for a in spec.batch]
+
+    def runner(commands):
+        argv = list(batch)
+        for command in commands:
+            argv += ["-ex", command]
+        result = jail.run_batch(session, argv, timeout=120)
         return (result.stdout or b"").decode("utf-8", "replace")
 
     try:
-        registry = mod_decoder.read_registry(CORE, PROG, runner=runner)
+        registry = modreg.read_registry(runner)
     except Exception as e:                       # noqa: BLE001
-        log.append(f"# could not read the module registry: {e}\n")
-        return []
+        return [], (f"# could not read the module registry: {e}\n",)
 
     module_dir = os.path.join(work, MODULE_DIR)
     os.makedirs(module_dir, mode=0o750, exist_ok=True)
-    grant_to_session(module_dir, gid)
+    grant_to_session(module_dir, lease.gid)
 
-    loaded = []
+    loaded, notes = [], []
     for entry in registry:
         sha1 = entry.get("sha1", "")
         blob = get_module_elf(sha1)
         ident = f"{entry['name']} (sha1 {sha1[:8]}...)"
         if blob is None:
-            log.append(f"# module {ident}: symbols not available\n")
+            notes.append(f"# module {ident}: symbols not available\n")
             continue
         rel = os.path.join(MODULE_DIR, f"{_UNSAFE.sub('_', entry['name'])}.elf")
-        _write(work, rel, maybe_bunzip(blob), gid)
+        _write(work, rel, maybe_bunzip(blob), lease.gid)
         loaded.append({**entry, "elf": rel})
-        log.append(f"# module {ident}: symbols loaded\n")
+        notes.append(f"# module {ident}: symbols loaded\n")
 
-    if loaded:
-        # addsym_commands() emits the literal `add-symbol-file <elf> <addr>
-        # -s .data ...` lines; the paths are jail-relative and gdb runs with
-        # /work as its cwd, so they resolve inside the sandbox.
-        _write(work, GDBINIT,
-               ("\n".join(mod_decoder.addsym_commands(loaded)) + "\n").encode(),
-               gid)
-    return loaded
+    if loaded and spec.add_symbols:
+        # The debugger's syntax for this comes from the descriptor; paths are
+        # jail-relative and the debugger runs with /work as its cwd.
+        commands = modreg.render_add_symbols(spec.add_symbols, loaded)
+        _write(work, SYMBOLS_FILE, ("\n".join(commands) + "\n").encode(), lease.gid)
+    return loaded, tuple(notes)

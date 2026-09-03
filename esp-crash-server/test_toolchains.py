@@ -278,8 +278,44 @@ def test_a_legacy_json_manifest_still_loads(tmp_path):
     }))
     tc = toolchains.get("legacy-tc")
     assert tc.root is None and tc.converter == "esp_coredump"
-    # Its closure was recorded at build time rather than computed.
-    assert tc.ro_binds == ("/opt/tc/bin/gdb", "/lib/libc.so.6")
+    # Its library closure was recorded at build time rather than computed.
+    assert tc.ro_binds[:2] == ("/opt/tc/bin/gdb", "/lib/libc.so.6")
+
+    # The manifest named a converter plugin instead of declaring commands, and
+    # those plugins are gone - so the phases they implied are synthesised, which
+    # is also a precise statement of what they did.
+    assert tc.core is not None and tc.report is not None
+    assert "esp_coredump" in " ".join(tc.core.commands[0])
+    assert tc.report.with_symbols == ("--extra-gdbinit-file", "{symbols_file}")
+    assert tc.modules.registry == "esp_crash_modmap"
+    # It has no bundled interpreter, so it must borrow the image's - including
+    # the coarse system-library bind that a package makes unnecessary.
+    assert any("python" in b for b in tc.ro_binds)
+
+
+def test_a_passthrough_legacy_manifest_declares_no_conversion(tmp_path):
+    import json
+    d = tmp_path / "legacy"
+    d.mkdir()
+    (d / toolchains.LEGACY_MANIFEST_NAME).write_text(json.dumps({
+        "name": "pt", "arch": "arm", "version": "1", "exe": "/opt/x/gdb",
+        "converter": "passthrough",
+    }))
+    tc = toolchains.get("pt")
+    assert tc.core is None and tc.modules is None
+    # ...and therefore pulls no interpreter into any jail.
+    assert not any("python" in b for b in tc.ro_binds)
+
+
+def test_an_unknown_legacy_converter_is_refused(tmp_path):
+    import json
+    d = tmp_path / "legacy"
+    d.mkdir()
+    (d / toolchains.LEGACY_MANIFEST_NAME).write_text(json.dumps({
+        "name": "x", "arch": "a", "version": "1", "exe": "/x", "converter": "invented",
+    }))
+    with pytest.raises(toolchains.DescriptorError, match="unknown converter"):
+        toolchains.installed()
 
 
 def test_a_package_shadows_a_legacy_manifest_of_the_same_name(tmp_path):

@@ -306,23 +306,108 @@ def _load_descriptor(path):
     return out
 
 
+def _legacy_python_binds():
+    """The interpreter paths the retired `esp_coredump` converter bound.
+
+    Reproduced here only for legacy manifests, which have no bundled
+    interpreter and so must borrow the image's. Note the wholesale system
+    library directories: Python extension modules dlopen libraries that `ldd`
+    on the interpreter never reveals, and enumerating that tail by hand was
+    quietly wrong after every rebuild. A package bundles its own interpreter and
+    needs none of this, which is why the coarse bind disappears with the last
+    legacy manifest.
+    """
+    import sys
+    import sysconfig
+
+    paths = {sys.executable, os.path.realpath(sys.executable)}
+    for name in ("python", "python3"):
+        candidate = os.path.join(os.path.dirname(sys.executable), name)
+        if os.path.exists(candidate):
+            paths.add(candidate)
+    for key in ("stdlib", "purelib", "platlib"):
+        value = sysconfig.get_paths().get(key)
+        if value and os.path.isdir(value):
+            paths.add(os.path.realpath(value))
+    libdir, ldlibrary = (sysconfig.get_config_var("LIBDIR"),
+                         sysconfig.get_config_var("LDLIBRARY"))
+    if libdir and ldlibrary:
+        candidate = os.path.realpath(os.path.join(libdir, ldlibrary))
+        if os.path.exists(candidate):
+            paths.add(candidate)
+    multiarch = sysconfig.get_config_var("MULTIARCH") or ""
+    for candidate in ("/lib64", "/usr/lib64",
+                      f"/lib/{multiarch}" if multiarch else "",
+                      f"/usr/lib/{multiarch}" if multiarch else ""):
+        if candidate and os.path.isdir(candidate):
+            paths.add(candidate)
+    return tuple(sorted(paths))
+
+
 def _load_legacy(path):
     """Parse an older build-time `jail-manifest.json`.
 
     Kept only so an image with baked manifests keeps working while packages are
     rolled out; it and the manifest generator go away together.
+
+    The manifest named a Python converter plugin instead of declaring commands.
+    Those plugins are gone, so the phases they implied are synthesised here -
+    which is also a precise statement of what they did, and makes the migration
+    checkable rather than asserted.
     """
+    import sys
+
     with open(path) as f:
         data = json.load(f)
     missing = [k for k in ("name", "arch", "version", "exe", "converter") if not data.get(k)]
     if missing:
         raise DescriptorError(f"{path}: manifest missing required key(s): {', '.join(missing)}")
+
+    exe, converter = data["exe"], data["converter"]
+    extra = tuple(data.get("extra", ()))
+    core = report = modules = None
+
+    if converter == "esp_coredump":
+        python = os.path.realpath(sys.executable)
+        extra = extra + _legacy_python_binds()
+        core = Phase(commands=((
+            python, "-m", "esp_coredump", "info_corefile", "-t", "raw",
+            "-c", "{dump}", "--save-core", "{core}", "--gdb", "{debugger}", "{prog}",
+        ),))
+        report = Phase(
+            commands=((
+                python, "-m", "esp_coredump", "info_corefile", "-t", "raw",
+                "-c", "{dump}", "--gdb", "{debugger}", "{prog}",
+            ),),
+            with_symbols=("--extra-gdbinit-file", "{symbols_file}"),
+        )
+        modules = Modules(
+            registry="esp_crash_modmap",
+            batch=("{debugger}", "-batch", "-nx", "{prog}", "-ex", "core-file {core}"),
+            add_symbols=modreg_default_add_symbols(),
+        )
+    elif converter != "passthrough":
+        raise DescriptorError(f"{path}: unknown converter {converter!r}")
+
     return [Toolchain(
         name=data["name"], arch=data["arch"], version=str(data["version"]),
-        exe=data["exe"], converter=data["converter"],
-        libs=tuple(data.get("libs", ())), extra=tuple(data.get("extra", ())),
+        exe=exe, converter=converter,
+        libs=tuple(data.get("libs", ())), extra=extra,
         env=dict(data.get("env", {})),
+        requires=("prog",),
+        core=core, report=report, modules=modules,
+        interactive=Phase(
+            commands=(("{debugger}", "-nx", "-q", "{prog}", "-ex", "core-file {core}"),),
+            with_symbols=("-x", "{symbols_file}"),
+        ),
     )]
+
+
+def modreg_default_add_symbols():
+    """Imported lazily: `gdb_app.modreg` is service-side, while this module is
+    also imported by the web app, and only the legacy path needs it."""
+    from gdb_app.modreg import DEFAULT_ADD_SYMBOLS
+    return DEFAULT_ADD_SYMBOLS
 
 
 # ------------------------------------------------------------------- discovery

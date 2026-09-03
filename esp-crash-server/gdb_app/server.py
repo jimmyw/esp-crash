@@ -210,15 +210,13 @@ class SessionServer:
             await self._shut(websocket, CLOSE_INTERNAL)
             return
 
-        # Preparation output (the converter's panic report, per-module symbol
-        # notes) is terminal *content*, not a lifecycle event, so it goes on the
-        # binary channel alongside gdb's output rather than through a status
-        # frame. That also puts it through to_crlf, which is what a multi-line
-        # message needs: the status path was writing embedded bare newlines
-        # straight to xterm.js and staircasing the whole report.
-        log_text = "".join(prepared.log).rstrip("\n")
-        if log_text.strip():
-            await self._echo(websocket, log_text + "\n")
+        # Preparation output - which module symbols resolved, then the
+        # symbolicated report - is terminal *content*, not a lifecycle event, so
+        # it goes on the binary channel alongside the debugger's own output
+        # rather than through a status frame. That also puts it through to_crlf,
+        # which is what multi-line text needs: the status path was writing
+        # embedded bare newlines straight to xterm.js and staircasing the report.
+        await self._echo(websocket, prepared.preamble())
 
         spec = jail.JailSpec(toolchain=toolchain, workdir=lease.workdir,
                              uid=lease.uid, gid=lease.gid, tier=jail.SESSION)

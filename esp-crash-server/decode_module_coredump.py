@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 """
-Decode ESP32 core dumps with dynamically loaded ELF module symbols.
+Decode ESP32 core dumps with dynamically loaded ELF module symbols, locally.
 
-The on-device module registry is read from the coredump by resolving the
-`s_mod_map` symbol via gdb and printing its fields with plain gdb `printf`
-commands (no gdb-Python: the Espressif toolchain gdb is built without Python
-scripting). Each record holds the module name, version, its SHA1, and the
-runtime section bases. Module frames are
-then symbolicated by handing gdb literal
-`add-symbol-file <elf> <text> -s .data <data> ...` commands whose addresses are
-the runtime section bases read straight out of the registry.
+This is the **standalone developer CLI**. The server no longer uses the
+subprocess helpers below: crash decoding happens inside a bubblewrap sandbox in
+the debug service, driven by a toolchain descriptor (see `gdb_app/` and
+`toolchains.py`). What the two share is the registry line protocol, which lives
+in `gdb_app/modreg.py` so there is exactly one implementation of it.
+
+This CLI is still worth keeping. It runs on a developer host where IDF,
+esp-coredump and the per-chip gdb launchers genuinely exist, it matches modules
+by name rather than needing the database, and it is the reference to diff
+against when a sandboxed report looks wrong.
+
+The on-device module registry is read by resolving `s_mod_map` via gdb and
+printing its fields with plain gdb `printf` commands - the Espressif toolchain
+gdb has no Python scripting. Each record holds the module name, version, SHA1
+and runtime section bases; module frames are then symbolicated by handing gdb
+literal `add-symbol-file <elf> <text> -s .data <data> ...` commands.
 
 Flow (host-driven, gdb invoked directly on a saved core ELF):
 
   1. esp-coredump converts the raw dump partition image into a core ELF
      (`--save-core`) and gives us the base panic/backtrace text.
   2. plain gdb reads `s_mod_map` from the core ELF -> [{name, version, sha1, sections}].
-  3. each module's debug ELF is resolved (server: by sha1; local CLI: by name).
+  3. each module's debug ELF is resolved (local CLI: by name).
   4. plain gdb re-runs with literal `add-symbol-file` per module and prints a
      module-symbolicated backtrace.
 
@@ -31,20 +39,23 @@ Local usage (modules matched by name):
 import argparse
 import glob
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
-# Section names whose runtime base addresses the registry records and gdb's
-# add-symbol-file needs. `text` is the positional base; the rest are `-s`.
-SECTION_FIELDS = ("text", "data", "bss", "rodata")
-
-# Delimited line emitted by the gdb registry-read script, one per slot:
-#   MODSLOT|<i>|<name>|<version>|<sha1-hex>|<text>|<data>|<bss>|<rodata>
-MODSLOT_PREFIX = "MODSLOT|"
-NSLOTS_PREFIX = "NSLOTS="
+# The registry protocol lives in one place; these names are re-exported so the
+# CLI's own interface (and its tests) are unchanged by the move.
+from gdb_app.modreg import (  # noqa: F401
+    MODSLOT_PREFIX,
+    NSLOTS_PREFIX,
+    SECTION_FIELDS,
+    addsym_commands,
+    parse_registry_output,
+    render_add_symbols,
+    write_addsym_gdbinit,
+)
+from gdb_app import modreg
 
 
 def parse_elf_map_arg(spec: str) -> tuple[str, str]:
@@ -56,8 +67,16 @@ def parse_elf_map_arg(spec: str) -> tuple[str, str]:
 
 
 def find_gdb(explicit: str | None = None) -> str:
-    """Locate an xtensa gdb. Any build works (we issue only plain commands, no
-    Python). Order: explicit arg, $MODULE_GDB, PATH, common IDF tool dirs."""
+    """Locate an xtensa gdb on this developer host. Any build works (we issue
+    only plain commands, no Python). Order: explicit arg, $MODULE_GDB, PATH,
+    common IDF tool dirs.
+
+    Note this deliberately prefers the per-chip launcher (`xtensa-esp32-elf-gdb`)
+    over the generic build: the launcher sets XTENSA_GNU_CONFIG, and without the
+    right core configuration gdb produces a confidently wrong backtrace rather
+    than an error. The sandboxed service sets that variable from the descriptor
+    instead, since the launcher cannot run without /proc.
+    """
     if explicit:
         return explicit
     env = os.environ.get("MODULE_GDB")
@@ -108,61 +127,13 @@ def _gdb_batch(gdb: str, prog: str, core_elf: str, commands: list[str]) -> str:
     return (proc.stdout + proc.stderr).decode("utf-8", "replace")
 
 
-def _slot_printf(i: int) -> str:
-    """gdb `printf` command that emits one delimited MODSLOT line for slot i:
-    the module name and version, the 20-byte sha1 as hex, and the four section
-    base addresses."""
-    sha = "".join("%02x" for _ in range(20))
-    sha_args = ", ".join(f"s_mod_map[{i}].sha1[{b}]" for b in range(20))
-    addr_args = ", ".join(f"s_mod_map[{i}].{s}.addr" for s in SECTION_FIELDS)
-    fmt = f"{MODSLOT_PREFIX}{i}|%s|%s|{sha}|%u|%u|%u|%u\\n"
-    return (f'printf "{fmt}", s_mod_map[{i}].name, '
-            f's_mod_map[{i}].version, {sha_args}, {addr_args}')
-
-
-def parse_registry_output(text: str) -> list[dict]:
-    """Parse MODSLOT lines into occupied-slot records. Best-effort: a slot is
-    occupied iff name is non-empty and text.addr != 0. Returns
-    [{name, version, sha1, text, data, bss, rodata}] with addresses as ints."""
-    mods = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith(MODSLOT_PREFIX):
-            continue
-        parts = line.split("|")
-        # MODSLOT | idx | name | version | sha1 | text | data | bss | rodata
-        if len(parts) != 9:
-            continue
-        _, _idx, name, version, sha1, t, d, b, r = parts
-        try:
-            text_addr, data_addr, bss_addr, rodata_addr = (
-                int(t) & 0xffffffff, int(d) & 0xffffffff,
-                int(b) & 0xffffffff, int(r) & 0xffffffff,
-            )
-        except ValueError:
-            continue
-        if not name or text_addr == 0:
-            continue  # free or mid-load slot
-        mods.append({
-            "name": name, "version": version, "sha1": sha1,
-            "text": text_addr, "data": data_addr,
-            "bss": bss_addr, "rodata": rodata_addr,
-        })
-    return mods
-
-
 def read_registry(core_elf: str, prog: str, *, gdb: str | None = None,
                   runner=None) -> list[dict]:
-    """Read `s_mod_map` from the core ELF using plain gdb commands. Returns
-    occupied-slot records (possibly empty). Never raises on a missing symbol.
+    """Read `s_mod_map` from the core ELF using plain gdb commands.
 
-    `runner`, if given, is called as `runner(commands) -> str` to execute a
-    list of gdb commands against (prog, core_elf) and return the combined
-    output; it defaults to running gdb directly here. The hook exists so the
-    sandboxed debug service can execute these same two passes inside a
-    bubblewrap jail (where the paths are jail-relative and the binary is chosen
-    from a toolchain manifest) without duplicating gdb's `printf` line
-    protocol, which is the fiddly part and must stay in one place.
+    Thin wrapper over `gdb_app.modreg.read_registry`, supplying a runner that
+    invokes gdb directly on this host. `runner` may be passed to override that -
+    the sandboxed service supplies one that runs gdb inside a jail.
     """
     if runner is None:
         resolved = find_gdb(gdb)
@@ -170,51 +141,7 @@ def read_registry(core_elf: str, prog: str, *, gdb: str | None = None,
         def runner(commands):
             return _gdb_batch(resolved, prog, core_elf, commands)
 
-    # Pass A: how many slots? (sizeof from DWARF; works without the core loaded
-    # but we load it anyway for a single, simple invocation path.)
-    out = runner([f'printf "{NSLOTS_PREFIX}%d\\n", '
-                  f'(int)(sizeof(s_mod_map)/sizeof(s_mod_map[0]))'])
-    n = 0
-    for line in out.splitlines():
-        line = line.strip()
-        if line.startswith(NSLOTS_PREFIX):
-            try:
-                n = int(line[len(NSLOTS_PREFIX):])
-            except ValueError:
-                n = 0
-            break
-    if n <= 0:
-        return []  # no s_mod_map symbol, or unreadable
-    # Pass B: dump each slot.
-    out = runner([_slot_printf(i) for i in range(n)])
-    return parse_registry_output(out)
-
-
-def addsym_commands(loaded: list[dict]) -> list[str]:
-    """Build literal `add-symbol-file` gdb commands for resolved modules.
-    `loaded` items are registry records (text/data/bss/rodata ints) plus an
-    'elf' path. Addresses are emitted as hex so any gdb can place the sections
-    without evaluating the registry."""
-    cmds = []
-    for m in loaded:
-        cmds.append(
-            "add-symbol-file {elf} {text:#x} "
-            "-s .data {data:#x} -s .bss {bss:#x} -s .rodata {rodata:#x}".format(**m)
-        )
-    return cmds
-
-
-def write_addsym_gdbinit(loaded: list[dict]) -> str:
-    """Write literal add-symbol-file commands for `loaded` to a temp gdbinit and
-    return its path. esp-coredump sources it via --extra-gdbinit-file so its own
-    panic report resolves module frames inline. The caller must delete the file."""
-    fd, path = tempfile.mkstemp(suffix=".gdbinit", prefix="modsym_")
-    with os.fdopen(fd, "w") as f:
-        cmds = addsym_commands(loaded)
-        f.write("\n".join(cmds))
-        if cmds:
-            f.write("\n")
-    return path
+    return modreg.read_registry(runner)
 
 
 def symbolicated_report(
