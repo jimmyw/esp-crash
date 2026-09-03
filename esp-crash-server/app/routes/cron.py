@@ -12,7 +12,7 @@ import requests
 import slack_sdk
 from flask import current_app
 from slack_sdk.errors import SlackApiError
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .. import decode_client
@@ -44,6 +44,20 @@ def _tick_budget():
                                   DEFAULT_TICK_BUDGET_SECONDS))
     except ValueError:
         return DEFAULT_TICK_BUDGET_SECONDS
+
+
+DEFAULT_AI_WINDOW_DAYS = 7
+
+
+def _ai_window_days():
+    """How recently a signature group must have crashed to be worth an AI
+    review. Groups whose newest crash is older than this are skipped: the
+    review costs one API call per group, and a group that stopped occurring
+    is of no operational interest. 0 or negative disables the window."""
+    try:
+        return int(os.environ.get("AI_REVIEW_WINDOW_DAYS", DEFAULT_AI_WINDOW_DAYS))
+    except ValueError:
+        return DEFAULT_AI_WINDOW_DAYS
 
 
 def _decode_one(crash):
@@ -342,11 +356,15 @@ def cron():
     # partially-configured deployment would otherwise retry a doomed API
     # call every tick instead of a clean, informative no-op.
     #
-    # No longer scoped to crashes after the grant date - now that a review
-    # is written once per (project_name, signature) group rather than per
-    # crash (see app/ai_tagging.py), granting access to a project only
-    # means reviewing its handful of distinct relations, not backfilling
-    # every historical crash.
+    # Scoped by recency, not by grant date: a group qualifies only if it has
+    # crashed within AI_REVIEW_WINDOW_DAYS. A review is written once per
+    # (project_name, signature) group rather than per crash (see
+    # app/ai_tagging.py), so this is one API call per *group* - but the
+    # historical backlog holds ~1000 distinct groups, most of which stopped
+    # occurring long ago, and paying to review a group that no longer happens
+    # buys nothing operationally. Groups outside the window are simply never
+    # picked up; if one recurs, its next crash brings it back into scope and
+    # it gets reviewed then.
     service_user = current_app.config.get("MCP_SERVICE_GITHUB_USER")
     ai_configured = bool(
         service_user
@@ -360,6 +378,19 @@ def cron():
             "MCP_PUBLIC_URL / MCP_SERVICE_TOKEN is not - skipping AI summarize/tag step"
         )
     if ai_configured:
+        # Filter on the crash rows *before* the DISTINCT ON, so a group is
+        # represented only by crashes inside the window - and a group with no
+        # crash in the window produces no row at all, which is the gate. The
+        # cutoff is computed in SQL from now(), the same function that wrote
+        # crash.date (a naive TIMESTAMP), so there is no timezone assumption
+        # on this side.
+        window_days = _ai_window_days()
+        window_conditions = []
+        if window_days > 0:
+            window_conditions.append(
+                Crash.date >= func.now() - text("interval '{} days'".format(window_days))
+            )
+
         # One representative (most recent) crash per not-yet-reviewed
         # (project_name, signature) group, rather than per crash - the
         # review is written once per group (see app/ai_tagging.py), so
@@ -375,6 +406,7 @@ def cron():
             .where(
                 Crash.dump.is_not(None), Crash.signature.is_not(None),
                 CrashRelation.ai_summary.is_(None),
+                *window_conditions,
             )
             .distinct(Crash.project_name, Crash.signature)
             .order_by(Crash.project_name, Crash.signature, Crash.date.desc())
