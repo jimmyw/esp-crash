@@ -159,6 +159,44 @@
 </div>
 
 <div class="w-5/6 mt-12 p-6 bg-white border border-gray-200 rounded-lg shadow mb-4">
+    <h2 class="text-2xl font-semibold mb-4">Debug toolchain</h2>
+    <p class="text-sm text-gray-600 mb-4">
+        Which debugger this project's crashes are opened with. Set this to enable
+        the <strong>Debug</strong> link on a crash page, which starts an interactive
+        gdb session in your browser.<br>
+        There is no default on purpose: loading a build into a debugger for the
+        wrong architecture produces confident nonsense rather than an error, so a
+        project with no toolchain set simply offers no debug session.
+    </p>
+    {% if toolchain_error %}
+    <p class="text-sm text-red-600 mb-2">
+        That toolchain is not installed on this server. Pick one from the list.
+    </p>
+    {% endif %}
+    {% if available_toolchains %}
+    <form action="{{ url_for('project_toolchain_admin', project_name=project_name) }}" method="POST"
+        class="flex items-center">
+        <label for="toolchain" class="sr-only">Debug toolchain</label>
+        <select id="toolchain" name="toolchain"
+            class="p-2 border-2 border-gray-300 rounded-md flex-grow mr-2">
+            <option value="">(none - no debug sessions)</option>
+            {% for name, tc in available_toolchains.items()|sort %}
+            <option value="{{ name }}" {% if name == toolchain %}selected{% endif %}>
+                {{ name }} &mdash; {{ tc.arch }}, gdb {{ tc.version }}
+            </option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="p-2 bg-blue-500 text-white rounded-md">Save</button>
+    </form>
+    {% else %}
+    <p class="text-sm text-gray-500">
+        No debug toolchains are installed on this server, so no debug sessions are
+        available.
+    </p>
+    {% endif %}
+</div>
+
+<div class="w-5/6 mt-12 p-6 bg-white border border-gray-200 rounded-lg shadow mb-4">
     <h2 class="text-2xl font-semibold mb-4">Device link template</h2>
     <p class="text-sm text-gray-600 mb-4">
         Optional. When set, a small "open external link" icon appears next to each

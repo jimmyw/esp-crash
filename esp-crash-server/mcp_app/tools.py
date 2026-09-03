@@ -17,8 +17,9 @@ from sqlalchemy import delete, func, insert, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models import (
-    Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ProjectAuth,
-    ProjectSettings, ProjectSlackIntegration, ProjectWebhook, Tag, db,
+    Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ModuleElf,
+    ProjectAuth, ProjectSettings, ProjectSlackIntegration, ProjectWebhook,
+    Tag, db,
 )
 from app.tags import find_or_create_tag
 from device_url import device_url_template_is_valid
@@ -140,11 +141,16 @@ def get_crash(github_user, crash_id):
             Crash.device_id, Device.ext_device_id, Device.alias,
             Crash.dump, Crash.module_map, Crash.module_names, CrashRelation.ai_title,
             CrashRelation.ai_summary, Crash.signature,
+            # Which debugger toolchain this crash would be opened with, so
+            # callers can tell whether an interactive session is available
+            # without a second round trip. NULL = none configured.
+            ProjectSettings.toolchain,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
         .join(Device, Crash.device_id == Device.device_id)
         .outerjoin(CrashRelation, (CrashRelation.project_name == Crash.project_name) & (CrashRelation.signature == Crash.signature))
+        .outerjoin(ProjectSettings, ProjectSettings.project_name == Crash.project_name)
         .where(Crash.crash_id == crash_id, ProjectAuth.github == github_user)
     ).mappings().first()
     if row is None:
@@ -662,3 +668,71 @@ def set_slack_channel(github_user, project_name, integration_id, channel_id, cha
     )
     db.session.commit()
     return {"updated": res.rowcount > 0, "integration_id": integration_id}
+
+
+def get_debug_artifacts(github_user, crash_id):
+    """The bytes an interactive debug session needs, ACL-scoped like every
+    other function here: the crash's raw dump, the newest build ELF matching
+    its project/version, and the project's configured toolchain name. None
+    when the crash does not exist or the caller has no access - the same
+    "missing and forbidden are indistinguishable" contract as get_crash.
+
+    Deliberately *not* exposed as an @mcp.tool: these are multi-megabyte
+    blobs that belong in a file on disk, not in a JSON response. It lives here
+    rather than in the debug service so there stays exactly one place where a
+    crash is checked against project_auth, which is the property that makes
+    the ACL model reviewable.
+
+    Blobs are stored bz2-compressed but historically some rows are raw, so
+    callers must normalise with the try-decompress idiom used across the
+    codebase (see gdb_app/materialize.py:maybe_bunzip).
+    """
+    row = db.session.execute(
+        select(
+            Crash.crash_id, Crash.project_name, Crash.project_ver,
+            Crash.crash_dmp, ProjectSettings.toolchain,
+        )
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .outerjoin(ProjectSettings, ProjectSettings.project_name == Crash.project_name)
+        .where(Crash.crash_id == crash_id, ProjectAuth.github == github_user)
+    ).mappings().first()
+    if row is None:
+        return None
+
+    # Newest build for the crash's exact version - the same choice
+    # app/routes/crashes.py:download_crash makes when it needs one program ELF
+    # to read the module registry with.
+    elf = db.session.execute(
+        select(ElfFile.elf_file_id, ElfFile.elf_file)
+        .where(ElfFile.project_name == row["project_name"],
+               ElfFile.project_ver == row["project_ver"])
+        .order_by(ElfFile.date.desc())
+        .limit(1)
+    ).mappings().first()
+
+    return {
+        "crash_id": row["crash_id"],
+        "project_name": row["project_name"],
+        "project_ver": row["project_ver"],
+        "toolchain": row["toolchain"],
+        "dump": bytes(row["crash_dmp"]) if row["crash_dmp"] is not None else None,
+        "elf_file_id": elf["elf_file_id"] if elf else None,
+        "prog": bytes(elf["elf_file"]) if elf and elf["elf_file"] is not None else None,
+    }
+
+
+def get_module_elf(app_sha1):
+    """Debug symbols for a runtime-loaded module, by the SHA1 of its shipped
+    binary. Returns bytes or None.
+
+    Not user-scoped, matching app/decode.py's existing lookup: module_elf is
+    keyed only by app_sha1 and holds no project column, so symbols are shared
+    across projects by design. Reaching another project's symbols requires
+    already possessing that exact binary (you need its SHA1), so this leaks
+    nothing a caller did not already have.
+    """
+    blob = db.session.execute(
+        select(ModuleElf.elf_file).where(ModuleElf.app_sha1 == app_sha1).limit(1)
+    ).scalars().first()
+    return bytes(blob) if blob is not None else None

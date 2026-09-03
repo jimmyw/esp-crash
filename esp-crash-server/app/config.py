@@ -58,3 +58,15 @@ def configure_app(app):
     app.config["MCP_PUBLIC_URL"] = os.environ.get("MCP_PUBLIC_URL", "")
     app.config["MCP_SERVICE_TOKEN"] = os.environ.get("MCP_SERVICE_TOKEN", "")
     app.config["MCP_SERVICE_GITHUB_USER"] = os.environ.get("MCP_SERVICE_GITHUB_USER", "")
+
+    # Interactive sandboxed gdb sessions (gdb_app/, served by the separate
+    # esp-crash-gdb container). Both optional: with either unset the crash page
+    # simply offers no Debug link, which is the correct behaviour for a
+    # deployment that has not stood the service up.
+    #   GDB_TICKET_SECRET - shared with the gdb service; signs the short-lived
+    #     session tickets (see gdb_tickets.py). Deliberately separate from
+    #     APP_SECRET_KEY so a second process never needs the cookie key.
+    #   GDB_PUBLIC_WS_URL - public wss:// URL the browser should connect to,
+    #     e.g. wss://gdb-esp-crash.example.com/v1/session
+    app.config["GDB_TICKET_SECRET"] = os.environ.get("GDB_TICKET_SECRET", "")
+    app.config["GDB_PUBLIC_WS_URL"] = os.environ.get("GDB_PUBLIC_WS_URL", "")

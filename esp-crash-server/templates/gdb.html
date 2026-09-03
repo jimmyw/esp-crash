@@ -1,0 +1,167 @@
+{% extends 'layout.html' %}
+{% block title %}Debug crash {{ crash_id }}{% endblock %}
+{% block content %}
+
+{#
+  Interactive debug console. This page holds no crash data: it asks the API for
+  a short-lived session ticket and streams a sandboxed gdb over a WebSocket, so
+  everything shown below arrives from the debug service at runtime.
+
+  Wire protocol (see gdb_app/server.py):
+    binary frames  raw terminal bytes, both directions
+    text frames    JSON control - {"t": "status"|"error"|"exit"} in,
+                   {"t": "resize"} out
+#}
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm-addon-fit/0.8.0/xterm-addon-fit.min.js"></script>
+
+<div class="flex items-baseline justify-between mb-2">
+    <h1 class="text-3xl font-bold">Debug crash {{ crash_id }}</h1>
+    <a href="{{ url_for('show_project_crash', project_name=project_name, crash_id=crash_id) }}"
+        class="text-blue-600 hover:underline">&larr; back to crash</a>
+</div>
+
+<div class="flex items-center mb-3 text-sm">
+    <span id="dot" class="inline-block w-2.5 h-2.5 rounded-full bg-gray-400 mr-2"></span>
+    <span id="state" class="text-gray-600">connecting...</span>
+    <button id="reconnect" class="ml-4 px-2 py-1 border border-gray-300 rounded hidden">Reconnect</button>
+</div>
+
+<div id="term" class="w-full p-2 bg-black rounded-md" style="height: 70vh;"></div>
+
+<p class="mt-3 text-sm text-gray-600">
+    A private, network-isolated sandbox holding only this crash and the debugger.
+    <code>bt</code> for a backtrace, <code>info locals</code>, <code>p *ptr</code>;
+    <code>quit</code> or closing the page ends the session.
+</p>
+
+<script>
+(function () {
+    const CRASH_ID = {{ crash_id | tojson }};
+
+    const term = new Terminal({
+        cursorBlink: true,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 13,
+        theme: { background: '#000000' },
+        // gdb output is long; keep enough history to scroll back through a
+        // full thread dump.
+        scrollback: 10000,
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('term'));
+    fit.fit();
+
+    const dot = document.getElementById('dot');
+    const stateText = document.getElementById('state');
+    const reconnectBtn = document.getElementById('reconnect');
+    let socket = null;
+
+    function setState(text, colour) {
+        stateText.textContent = text;
+        dot.className = 'inline-block w-2.5 h-2.5 rounded-full mr-2 ' + colour;
+    }
+
+    // Terminal-visible notices are dim yellow so they are clearly ours and not
+    // something gdb printed.
+    function notice(text) {
+        term.writeln('\x1b[33m' + text + '\x1b[0m');
+    }
+
+    function fail(text) {
+        notice(text);
+        setState('disconnected', 'bg-red-500');
+        reconnectBtn.classList.remove('hidden');
+    }
+
+    async function connect() {
+        reconnectBtn.classList.add('hidden');
+        setState('authorising...', 'bg-yellow-400');
+
+        let session;
+        try {
+            const response = await fetch(
+                '/api/v1/crashes/' + CRASH_ID + '/gdb-session',
+                { method: 'POST', headers: { 'X-Api-Client': '1' } });
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                fail('Could not start a debug session: ' +
+                     ((body.error && body.error.message) || response.statusText));
+                return;
+            }
+            session = await response.json();
+        } catch (e) {
+            fail('Could not reach the server: ' + e.message);
+            return;
+        }
+
+        setState('connecting...', 'bg-yellow-400');
+        socket = new WebSocket(session.ws_url);
+        socket.binaryType = 'arraybuffer';
+
+        socket.onopen = () => {
+            setState('connected', 'bg-green-500');
+            sendResize();
+        };
+
+        socket.onmessage = (event) => {
+            if (typeof event.data === 'string') {
+                let msg;
+                try { msg = JSON.parse(event.data); } catch (e) { return; }
+                if (msg.t === 'error') { notice(msg.message); }
+                else if (msg.t === 'status') { term.writeln('\x1b[90m' + msg.message + '\x1b[0m'); }
+                return;
+            }
+            term.write(new Uint8Array(event.data));
+        };
+
+        socket.onclose = (event) => {
+            // 4xxx codes are ours (see gdb_app/server.py); 4401 specifically
+            // means the ticket was rejected, which a retry can legitimately fix.
+            if (event.code === 4401) {
+                fail('\r\nSession not authorised. Try reconnecting.');
+            } else if (event.code === 4503) {
+                fail('\r\nThe server is at capacity. Try again shortly.');
+            } else if (event.code === 4408) {
+                fail('\r\nSession closed after being idle.');
+            } else {
+                setState('session ended', 'bg-gray-400');
+                reconnectBtn.classList.remove('hidden');
+                term.writeln('\x1b[90m\r\n-- session ended --\x1b[0m');
+            }
+            socket = null;
+        };
+
+        socket.onerror = () => { /* onclose always follows; report there */ };
+    }
+
+    function sendResize() {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }));
+        }
+    }
+
+    term.onData((data) => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(new TextEncoder().encode(data));
+        }
+    });
+
+    // Debounced: dragging a window edge fires continuously, and each resize is
+    // an ioctl on the pty.
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => { fit.fit(); sendResize(); }, 120);
+    });
+
+    reconnectBtn.addEventListener('click', () => { term.reset(); connect(); });
+    window.addEventListener('beforeunload', () => { if (socket) socket.close(); });
+
+    connect();
+})();
+</script>
+{% endblock %}

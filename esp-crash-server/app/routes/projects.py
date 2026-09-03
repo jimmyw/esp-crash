@@ -7,6 +7,7 @@ from flask import current_app, redirect, request, session, url_for
 from sqlalchemy import delete, func, insert, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+import toolchains
 from device_url import DEVICE_ID_PLACEHOLDER, device_url_template_is_valid
 
 from ..auth import auth_filter, login_required
@@ -389,10 +390,15 @@ def project_settings(project_name):
     ).mappings().all()
 
     settings_row = db.session.execute(
-        select(ProjectSettings.device_url_template)
+        select(ProjectSettings.device_url_template, ProjectSettings.toolchain)
         .where(ProjectSettings.project_name == project_name)
     ).mappings().all()
     device_url_template = settings_row[0]['device_url_template'] if settings_row else ''
+    toolchain = settings_row[0]['toolchain'] if settings_row else None
+
+    # Offered as a closed list read from the image's build-time jail manifests,
+    # so a project can only ever name a toolchain this server can actually run.
+    available_toolchains = toolchains.installed()
 
     return render_template('project_settings.html',
                          project_name=project_name,
@@ -402,7 +408,10 @@ def project_settings(project_name):
                          slack_client_id=current_app.config['SLACK_CLIENT_ID'],
                          device_url_template=device_url_template or '',
                          device_url_placeholder=DEVICE_ID_PLACEHOLDER,
-                         device_url_error=request.args.get('device_url_error'))
+                         device_url_error=request.args.get('device_url_error'),
+                         toolchain=toolchain or '',
+                         available_toolchains=available_toolchains,
+                         toolchain_error=request.args.get('toolchain_error'))
 
 
 @login_required
@@ -488,6 +497,40 @@ def project_device_url_admin(project_name):
     return redirect(url_for('project_settings', project_name=project_name))
 
 
+@login_required
+def project_toolchain_admin(project_name):
+    """Save (or clear) the debugger toolchain used for this project's crashes."""
+    # Permission check: same gate as the rest of the project settings.
+    auth_check = db.session.execute(
+        select(ProjectAuth.project_name)
+        .where(ProjectAuth.project_name == project_name, auth_filter(ProjectAuth.github))
+    ).mappings().all()
+    if not auth_check:
+        return "Forbidden: You do not have access to this project.", 403
+
+    name = (request.form.get('toolchain') or '').strip()
+
+    # Only a name this server actually has a manifest for may be stored. The
+    # value ends up selecting filesystem paths for a sandbox, so validating it
+    # against the installed set here - as well as at session start - keeps a
+    # typo from being written in the first place.
+    if name and name not in toolchains.installed():
+        return redirect(url_for('project_settings', project_name=project_name,
+                                toolchain_error='1'))
+
+    stmt = pg_insert(ProjectSettings).values(
+        project_name=project_name, toolchain=(name or None)
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["project_name"],
+        set_={"toolchain": stmt.excluded.toolchain},
+    )
+    db.session.execute(stmt)
+    db.session.commit()
+
+    return redirect(url_for('project_settings', project_name=project_name))
+
+
 def register(app):
     app.add_url_rule('/projects/<project_name>', endpoint="list_project_crashes", view_func=list_project_crashes)
     app.add_url_rule('/crash', endpoint="list_crashes", view_func=list_crashes)
@@ -498,5 +541,7 @@ def register(app):
     app.add_url_rule('/projects/<project_name>/acl/create', endpoint="create_acl", view_func=create_acl, methods=['POST'])
     app.add_url_rule('/projects/<project_name>/acl/delete/<github>', endpoint="delete_acl", view_func=delete_acl)
     app.add_url_rule('/projects/<project_name>/settings', endpoint="project_settings", view_func=project_settings)
+    app.add_url_rule('/projects/<project_name>/settings/toolchain', endpoint="project_toolchain_admin",
+                     view_func=project_toolchain_admin, methods=['POST'])
     app.add_url_rule('/projects/<project_name>/webhooks', endpoint="project_webhooks_admin", view_func=project_webhooks_admin, methods=['GET', 'POST'])
     app.add_url_rule('/projects/<project_name>/settings/device-url', endpoint="project_device_url_admin", view_func=project_device_url_admin, methods=['POST'])

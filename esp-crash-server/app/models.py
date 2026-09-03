@@ -112,6 +112,12 @@ class ProjectSettings(db.Model):
 
     project_name = db.Column(db.Text, primary_key=True)
     device_url_template = db.Column(db.Text)
+    # Name of the debugger toolchain for this project's crashes, matching a
+    # build-time jail manifest (see toolchains.py). NULL is a valid steady
+    # state: no interactive debug session is offered, because there is no safe
+    # default - guessing would mean loading an ELF into a gdb built for another
+    # architecture.
+    toolchain = db.Column(db.Text)
 
 
 class Tag(db.Model):

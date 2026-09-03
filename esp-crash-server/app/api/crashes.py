@@ -1,16 +1,20 @@
 """GET/POST/DELETE /api/v1/crashes - listing, detail, refresh,
 reload-summary, delete, and tag attach/detach."""
 from apiflask import abort
-from flask import session
+from flask import current_app, session
 from sqlalchemy import func, select, tuple_
 
+import gdb_tickets
 from app.models import Crash, CrashRelationTag, db
 from mcp_app import tools
 
 from ..auth import api_login_required
 from . import api_v1
 from .schema import not_found_if_none, paginated
-from .schemas import CrashDetailSchema, CrashListQuerySchema, CrashListSchema, TagAddInSchema
+from .schemas import (
+    CrashDetailSchema, CrashListQuerySchema, CrashListSchema, GdbSessionSchema,
+    TagAddInSchema,
+)
 
 
 def _count_crashes(github_user, query_data):
@@ -117,3 +121,38 @@ def remove_crash_tag(crash_id, tag_id):
     if not result["removed"]:
         abort(404, message="Tag not attached, crash not found, or not accessible")
     return result
+
+
+@api_v1.post("/crashes/<int:crash_id>/gdb-session")
+@api_v1.output(GdbSessionSchema)
+@api_login_required
+def create_gdb_session(crash_id):
+    """Authorise one interactive debug session and say where to connect.
+
+    The ACL check happens here, in the app that already owns the GitHub
+    session, and the result is a signed 60-second single-use ticket the browser
+    puts in the WebSocket URL (a browser cannot set headers on a WebSocket
+    handshake, so a query-string ticket is the available mechanism). The debug
+    service re-checks access against the database before starting anything, so
+    this ticket is a statement of provenance rather than a bearer credential
+    for the crash itself - see gdb_tickets.py.
+    """
+    secret = current_app.config["GDB_TICKET_SECRET"]
+    ws_url = current_app.config["GDB_PUBLIC_WS_URL"]
+    if not secret or not ws_url:
+        abort(503, message="Interactive debugging is not configured on this server")
+
+    github_user = session["gh_user"]
+    crash = not_found_if_none(tools.get_crash(github_user, crash_id), "Crash not found")
+
+    signer = gdb_tickets.TicketSigner(secret)
+    ticket = signer.issue(github_user, crash_id)
+    separator = "&" if "?" in ws_url else "?"
+    return {
+        "ws_url": f"{ws_url}{separator}ticket={ticket}",
+        "expires_in": signer.ttl_seconds,
+        # Echoed back so the terminal can show which toolchain it is talking to;
+        # None means the project has none configured and the session will be
+        # refused with an explanation.
+        "toolchain": crash.get("toolchain"),
+    }

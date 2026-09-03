@@ -32,12 +32,65 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_USER: esp-crash
       POSTGRES_PASSWORD: xxxxx
-      POSTGRES_DB: esp-crash      
+      POSTGRES_DB: esp-crash
+      # Interactive in-browser gdb sessions. Both must be set for the Debug
+      # link to appear on a crash page; leave them empty to keep the feature
+      # off. GDB_TICKET_SECRET must match the gdb service's value, and is
+      # deliberately separate from APP_SECRET_KEY so the debug service never
+      # needs the session-cookie key.
+      GDB_TICKET_SECRET: aaaaaaaaaaaaaaaaaaaa
+      GDB_PUBLIC_WS_URL: "wss://gdb-esp-crash.wennlund.nu/v1/session"
 
   cron:
     build: esp-crash-server
     restart: always
     command: bash -c "while sleep 10; do curl -s 'backend:8000/cron'; done"
+
+  # Sandboxed interactive gdb sessions, one bubblewrap jail per WebSocket.
+  # Separate from `backend` for two reasons: gunicorn's synchronous workers
+  # cannot serve WebSockets, and this is the only container that needs the
+  # relaxed seccomp profile bubblewrap requires.
+  esp-crash-gdb:
+    build: esp-crash-server
+    restart: always
+    command: uvicorn gdb_server:app --host 0.0.0.0 --port 8002
+    ports:
+      - 8002:8002
+    depends_on:
+      - postgres
+    # bubblewrap creates an unprivileged user namespace, which Docker's default
+    # seccomp profile blocks (clone/unshare with CLONE_NEWUSER) - it fails with
+    # a misleading "the kernel does not allow non-privileged user namespaces"
+    # even where the host allows them. The syscall filtering that matters is
+    # applied inside the jail; this container runs only our own code.
+    security_opt:
+      - seccomp=unconfined
+    # CAP_SETUID/SETGID to drop into a per-session account, CAP_CHOWN to give
+    # that session its work directory, and CAP_SETFCAP because without it
+    # bubblewrap cannot write even an identity uid map.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - SETFCAP
+      - CHOWN
+    # Session work directories: memory-backed, so decompressed crash dumps and
+    # ELFs never touch disk and nothing survives a restart.
+    tmpfs:
+      - /run/gdb:size=2g,mode=0711
+    environment:
+      # Must match the backend's GDB_TICKET_SECRET.
+      GDB_TICKET_SECRET: aaaaaaaaaaaaaaaaaaaa
+      # Optional tuning: session limits and the concurrent-session cap (which
+      # cannot exceed the number of gdbrun* accounts baked into the image, see
+      # the Dockerfile's GDB_SESSION_SLOTS).
+      GDB_SESSION_IDLE_SECONDS: "300"
+      GDB_SESSION_MAX_SECONDS: "1800"
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: esp-crash
+      POSTGRES_PASSWORD: xxxxx
+      POSTGRES_DB: esp-crash
 
   postgres:
     image: postgres:15

@@ -329,6 +329,80 @@ members) must match.
 
 
 
-## What's upcoming?
+## Interactive in-browser gdb sessions
 
-Im working on an interactive in browser gdb debug session. Its going to be awsome!
+A crash page shows a **Debug** link when the project has a debug toolchain
+configured. It opens a real gdb console in the browser: `bt`, `info locals`,
+`p *handle`, `frame 3` — the full command set, on the actual core, with your
+build's symbols and any runtime module symbols already loaded. No download, no
+local toolchain.
+
+Each session runs in its own bubblewrap sandbox for as long as the WebSocket is
+open, and is destroyed when you close the page.
+
+### Enabling it
+
+1. Set `GDB_TICKET_SECRET` and `GDB_PUBLIC_WS_URL` on the `backend` service, and
+   the *same* `GDB_TICKET_SECRET` on the `esp-crash-gdb` service (see
+   `docker-compose.yml.template`). With either unset, no Debug link appears.
+2. Point your reverse proxy at the `esp-crash-gdb` container's port 8002, with
+   WebSocket upgrade allowed.
+3. In **project settings → Debug toolchain**, pick a toolchain. There is
+   deliberately no default: loading a build into a debugger for the wrong
+   architecture produces confident nonsense rather than an error, so a project
+   with none set simply offers no session.
+
+`GET /v1/info` on the service lists the toolchains it has and how many session
+slots are free.
+
+### How the sandbox works
+
+Everything gdb needs is already in Postgres, so a session is materialised
+straight from the stored blobs into a private work directory — there is no
+bundle and nothing is written outside a tmpfs.
+
+Two jails, because parsing an untrusted crash artifact and holding an
+interactive console are very different risks:
+
+- **Conversion** — short-lived and timeout-bounded, this is where the raw
+  device-supplied dump is parsed (via `esp-coredump` for ESP targets). It is
+  allowed to carry a Python runtime because it exits immediately.
+- **Session** — holds the pty, but runs *plain gdb only* on the already-converted
+  core plus literal `add-symbol-file` lines. No interpreter, no shell: gdb's
+  `shell` and `python` commands fail for want of a binary rather than because a
+  blocklist rejected them.
+
+Each jail is an empty tmpfs root, remounted read-only, with only an explicitly
+enumerated set of read-only binds on top — recorded per toolchain at image build
+time from the debugger's `ldd` closure, so a base-image change that breaks it
+fails the build rather than a debug session. The jail has no network and no
+`/proc`, and the only writable path is its own work directory.
+
+Sessions cannot reach each other. Every live session gets a dedicated uid from a
+pool of accounts baked into the image, so a cross-session `ptrace` or `kill` is
+a kernel-level `EPERM`, and `RLIMIT_NPROC` — enforced per uid — bounds each
+session's processes independently. Separate user, pid, net, ipc, uts and cgroup
+namespaces mean one session cannot even enumerate another's processes, and the
+directory holding session work dirs does not exist inside a jail, so peers
+cannot be named. The database credentials stay in the service process; the
+debugger never has database access or a network.
+
+Access is checked twice: the web app authorises the request against the same
+`project_auth` ACLs as everything else and issues a 60-second single-use ticket,
+and the debug service independently re-checks that access against the database
+before starting anything — so a leaked signing key alone grants nothing, and an
+ACL revoked a second ago takes effect immediately.
+
+Sessions end on disconnect, after 5 minutes idle, or after 30 minutes total,
+whichever comes first; the process group is killed and the work directory
+removed.
+
+### Adding another architecture
+
+The toolchain layer is vendor-neutral: a toolchain is a build-time descriptor
+(`{name, arch, exe, libs, extra, env, converter}`), and the raw-artifact-to-core
+step is a named converter in `gdb_app/converters/`. Adding `riscv32-esp-elf`,
+`arm-none-eabi` or `gdb-multiarch` means one more `install_toolchain.sh` call
+and one more `make_jail_manifest.py` call in the Dockerfile — a table row, not
+new code. Targets that already upload a real ELF core use the `passthrough`
+converter and pull no interpreter into any jail.

@@ -8,7 +8,9 @@ import bz2
 import tempfile
 import zipfile
 
-from flask import redirect, send_file, url_for
+from flask import current_app, redirect, send_file, url_for
+
+import toolchains
 from sqlalchemy import delete, func, select, update
 
 from .. import decode
@@ -33,7 +35,8 @@ def show_project_crash(project_name, crash_id):
             Crash.crash_id, Crash.date, Crash.project_name, Crash.device_id,
             Crash.project_ver, Crash.crash_dmp, Device.ext_device_id,
             func.coalesce(Device.alias, "").label("device_alias"), Crash.dump,
-            ProjectSettings.device_url_template, Crash.module_map,
+            ProjectSettings.device_url_template, ProjectSettings.toolchain,
+            Crash.module_map,
             CrashRelation.ai_title, CrashRelation.ai_summary, Crash.signature,
         )
         .select_from(Crash)
@@ -99,7 +102,19 @@ def show_project_crash(project_name, crash_id):
             "available": bool(row),
         })
 
-    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"], modules = modules_for_ui, project_tags = project_tags)
+    # Offer the Debug link only when a session could actually start: the
+    # project must name an installed toolchain, the debug service must be
+    # configured, and there must be a build to load symbols from. Showing a
+    # link that always fails is worse than showing none.
+    debug_available = bool(
+        crash.get("toolchain")
+        and crash["toolchain"] in toolchains.installed()
+        and current_app.config.get("GDB_PUBLIC_WS_URL")
+        and current_app.config.get("GDB_TICKET_SECRET")
+        and elf_images
+    )
+
+    return render_template('crash.html', crash = crash, elf_images = elf_images, dump = crash["dump"], modules = modules_for_ui, project_tags = project_tags, debug_available = debug_available)
 
 
 @login_required
@@ -317,6 +332,19 @@ def delete_crash(project_name, crash_id):
     return redirect(f"/projects/{project_name}", code=302)
 
 
+@login_required
+def debug_crash(project_name, crash_id):
+    """The interactive debug terminal page.
+
+    Renders the xterm.js console only; it fetches its own session ticket from
+    /api/v1/crashes/<id>/gdb-session and connects to the separate debug
+    service. Access is enforced there and again by that service, so this view
+    deliberately does no ACL query of its own beyond login_required - it hands
+    out no crash data.
+    """
+    return render_template('gdb.html', project_name=project_name, crash_id=crash_id)
+
+
 def register(app):
     app.add_url_rule('/crash/<crash_id>', endpoint="show_crash", view_func=show_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>', endpoint="show_project_crash", view_func=show_project_crash)
@@ -324,3 +352,7 @@ def register(app):
     app.add_url_rule('/projects/<project_name>/<crash_id>/reload-summary', endpoint="reload_crash_summary", view_func=reload_crash_summary, methods=['POST'])
     app.add_url_rule('/crash/<crash_id>/download', endpoint="download_crash", view_func=download_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>/delete', endpoint="delete_crash", view_func=delete_crash)
+    # <int:> here, unlike the older sibling routes: this is a new route and
+    # the API path it talks to is /api/v1/crashes/<int:crash_id>, so a
+    # non-numeric id is rejected at routing rather than reaching the view.
+    app.add_url_rule('/projects/<project_name>/<int:crash_id>/debug', endpoint="debug_crash", view_func=debug_crash)

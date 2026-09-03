@@ -151,15 +151,29 @@ def parse_registry_output(text: str) -> list[dict]:
     return mods
 
 
-def read_registry(core_elf: str, prog: str, *, gdb: str | None = None) -> list[dict]:
+def read_registry(core_elf: str, prog: str, *, gdb: str | None = None,
+                  runner=None) -> list[dict]:
     """Read `s_mod_map` from the core ELF using plain gdb commands. Returns
-    occupied-slot records (possibly empty). Never raises on a missing symbol."""
-    gdb = find_gdb(gdb)
+    occupied-slot records (possibly empty). Never raises on a missing symbol.
+
+    `runner`, if given, is called as `runner(commands) -> str` to execute a
+    list of gdb commands against (prog, core_elf) and return the combined
+    output; it defaults to running gdb directly here. The hook exists so the
+    sandboxed debug service can execute these same two passes inside a
+    bubblewrap jail (where the paths are jail-relative and the binary is chosen
+    from a toolchain manifest) without duplicating gdb's `printf` line
+    protocol, which is the fiddly part and must stay in one place.
+    """
+    if runner is None:
+        resolved = find_gdb(gdb)
+
+        def runner(commands):
+            return _gdb_batch(resolved, prog, core_elf, commands)
+
     # Pass A: how many slots? (sizeof from DWARF; works without the core loaded
     # but we load it anyway for a single, simple invocation path.)
-    out = _gdb_batch(gdb, prog, core_elf,
-                     [f'printf "{NSLOTS_PREFIX}%d\\n", '
-                      f'(int)(sizeof(s_mod_map)/sizeof(s_mod_map[0]))'])
+    out = runner([f'printf "{NSLOTS_PREFIX}%d\\n", '
+                  f'(int)(sizeof(s_mod_map)/sizeof(s_mod_map[0]))'])
     n = 0
     for line in out.splitlines():
         line = line.strip()
@@ -172,7 +186,7 @@ def read_registry(core_elf: str, prog: str, *, gdb: str | None = None) -> list[d
     if n <= 0:
         return []  # no s_mod_map symbol, or unreadable
     # Pass B: dump each slot.
-    out = _gdb_batch(gdb, prog, core_elf, [_slot_printf(i) for i in range(n)])
+    out = runner([_slot_printf(i) for i in range(n)])
     return parse_registry_output(out)
 
 

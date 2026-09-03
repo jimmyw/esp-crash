@@ -74,6 +74,9 @@ class CrashDetailSchema(Schema):
     ai_title = fields.Str(allow_none=True)
     ai_summary = fields.Str(allow_none=True)
     signature = fields.Str(allow_none=True)
+    # Debugger toolchain configured for the crash's project; None means no
+    # interactive debug session is available for it.
+    toolchain = fields.Str(allow_none=True)
     builds = fields.List(fields.Dict())
     tags = fields.List(fields.Dict())
 
@@ -180,3 +183,11 @@ class DeviceUrlTemplateInSchema(Schema):
 class SlackChannelInSchema(Schema):
     channel_id = fields.Str(required=True)
     channel_name = fields.Str(required=True)
+
+
+class GdbSessionSchema(Schema):
+    """Everything the browser needs to open an interactive debug session: where
+    to connect, and the short-lived ticket authorising it."""
+    ws_url = fields.String()
+    expires_in = fields.Integer()
+    toolchain = fields.String(allow_none=True)
