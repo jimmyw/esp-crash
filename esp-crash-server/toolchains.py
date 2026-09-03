@@ -1,119 +1,402 @@
-"""Installed debugger toolchains, discovered from build-time jail manifests.
+"""Installed debugger toolchains, discovered at runtime from mounted packages.
 
-A *toolchain* here is everything the sandbox needs in order to run a debugger
-for one target architecture: the gdb binary, the exact shared libraries it
-needs, any auxiliary data files (ESP ROM ELFs, an IDF `roms.json`, ...), the
-environment those data files are found through, and the name of the converter
-that turns a raw uploaded crash artifact into something gdb can open.
+A *toolchain* is everything needed to debug one target: a debugger, the exact
+libraries and data files it needs, optionally its own interpreter, and
+instructions for turning a raw crash artifact into a core file, a report, and an
+interactive session.
 
-Manifests are generated at image build time by `tools/make_jail_manifest.py`
-(one `jail-manifest.json` per installed toolchain) rather than being written by
-hand, so a base-image change that alters a library closure fails the build
-instead of a user's debug session. This module only reads them.
+Toolchains arrive as **packages** - self-contained directories built by
+`toolchains/recipes/` and mounted read-only - each carrying a `toolchain.yml`
+describing itself. Nothing here is baked into the image, so adding support for a
+chip family is dropping in a directory rather than rebuilding and redeploying.
 
-Deliberately vendor-neutral: nothing here knows what Espressif is. An
-`arm-none-eabi` or `riscv64-unknown-elf` toolchain is the same kind of entry as
-the xtensa one, differing only in its manifest contents. See
-`gdb_app/converters/` for the other half of that seam.
+Deliberately vendor-neutral. Nothing in this module knows what Espressif is: the
+debugger's name, its environment, the commands that produce a core and a report,
+the debugger syntax for loading module symbols - all of it is descriptor data.
+An `arm-none-eabi` package that needs no conversion and has no module registry
+is expressed by *omitting* those sections, not by adding code here.
 
 Kept as a top-level module (like `decode_module_coredump` and `device_url`)
 rather than inside `app/`: it is pure logic with no Flask dependency, and both
-the web app and the standalone gdb service import it - putting it in the `app`
-package would make the build-time jail smoke test import the whole Flask
-application just to read a JSON file.
+the web app and the standalone debug service import it.
+
+During the migration this also still reads the older build-time
+`jail-manifest.json` format, so an image with baked manifests and a host with
+mounted packages both resolve. See `_load_legacy`.
 """
 import functools
 import glob
 import json
 import os
+import string
+import subprocess
 from dataclasses import dataclass, field
 
-# Colon-separated roots to scan. The default covers the historical Espressif
-# location plus a vendor-neutral one for non-ESP toolchains, so adding an ARM or
-# RISC-V toolchain needs no config change.
-DEFAULT_ROOTS = "/opt/esp/tools:/opt/toolchains"
+import yaml
 
-MANIFEST_NAME = "jail-manifest.json"
+# Colon-separated roots to scan. `/opt/toolchains` is where packages are
+# mounted; `/opt/esp/tools` is only for the legacy baked manifests and goes away
+# with them.
+DEFAULT_ROOTS = "/opt/toolchains:/opt/esp/tools"
+
+DESCRIPTOR_NAME = "toolchain.yml"
+LEGACY_MANIFEST_NAME = "jail-manifest.json"
+
+SCHEMA_VERSION = 1
+
+# The placeholder set is the interface between this service and a descriptor, so
+# it is closed: an unrecognised placeholder is a load error, never a literal
+# that reaches a command line and fails somewhere far away.
+PLACEHOLDERS = frozenset({
+    "root", "debugger", "python", "dump", "prog", "core", "symbols_file", "work",
+})
+# Additionally allowed inside `modules.add_symbols`, where the values come from
+# the on-device module registry.
+MODULE_PLACEHOLDERS = frozenset({
+    "elf", "name", "version", "sha1", "text", "data", "bss", "rodata",
+})
+
+
+class DescriptorError(ValueError):
+    """A descriptor is malformed. Always names the file and the problem: these
+    are read at runtime from a mounted directory, so a bad one must be loud
+    rather than yield a half-configured sandbox.
+
+    A ValueError because that is what it is, and because callers already
+    treated a bad manifest that way.
+    """
+
+
+@dataclass(frozen=True)
+class Phase:
+    """One declared step: a list of argv templates run in order."""
+    commands: tuple = ()
+    # Appended to the final command only once module symbols were resolved.
+    with_symbols: tuple = ()
+    timeout: int = 300
+
+
+@dataclass(frozen=True)
+class Modules:
+    """How to enumerate runtime-loaded modules and hand their symbols to the
+    debugger. Absent for a target that has none.
+
+    `registry` names an in-tree parsing protocol rather than describing one:
+    that part is genuinely code (a debugger `printf` line protocol), and
+    resolving a name must not become an arbitrary import - see
+    `gdb_app.modreg`.
+    """
+    registry: str
+    batch: tuple = ()
+    add_symbols: tuple = ()
 
 
 @dataclass(frozen=True)
 class Toolchain:
-    """One installed debugger toolchain, as recorded by its jail manifest.
-
-    `libs`/`extra` are absolute host paths that get read-only bound into the
-    jail at those same paths (the ELF interpreter and DT_NEEDED lookups use
-    standard absolute paths, so remapping them would mean maintaining
-    ld.so.conf or RPATH inside the sandbox for no benefit).
-    """
+    """One selectable toolchain, as stored in `project_settings.toolchain`."""
     name: str
     arch: str
     version: str
     exe: str
-    converter: str
+    root: str = None                    # package dir; None for legacy manifests
+    python: str = None                  # the package's own interpreter, if any
+    chip: str = None
+    description: str = ""
+    env: dict = field(default_factory=dict)
+    binds: tuple = ()                   # declared paths outside the package
+    library_path: tuple = ()
+    requires: tuple = ()
+    core: Phase = None
+    report: Phase = None
+    interactive: Phase = None
+    modules: Modules = None
+    # Legacy manifests only: the closure was recorded at image build time, and
+    # the conversion step was a named Python plugin.
     libs: tuple = ()
     extra: tuple = ()
-    env: dict = field(default_factory=dict)
+    converter: str = None
 
     @property
     def ro_binds(self):
-        """Every host path this toolchain needs, read-only, deduplicated and
-        ordered so the jail command line is stable (and diffable in tests)."""
-        seen = {}
-        for p in (self.exe, *self.libs, *self.extra):
-            seen[p] = None
-        return tuple(seen)
+        """Every host path this toolchain needs bound read-only.
+
+        For a package: the package directory itself, the declared binds, and the
+        library closure - computed here rather than recorded at build time
+        because the closure is a property of the *runtime* image. A package
+        built on Arch resolves `/usr/lib/libc.so.6`; the Debian-based server
+        image needs `/lib/x86_64-linux-gnu/libc.so.6`. Recording it at build
+        time would bake in the build host's paths.
+
+        Computed lazily and cached: the web app calls `installed()` on every
+        crash-page render and needs only names and versions, so it must never
+        pay for this.
+        """
+        if self.root is None:
+            seen = {}
+            for p in (self.exe, *self.libs, *self.extra):
+                seen[p] = None
+            return tuple(seen)
+        return _package_binds(self.root, self.exe, self.python, self.binds,
+                              _tree_signature(self.root))
+
+    def render(self, phase, subst, with_symbols=False):
+        """Substitute placeholders into a phase's commands, returning a list of
+        argv lists.
+
+        Substitution is per-argv-element over a list, never a shell string, so
+        no value can inject an argument.
+        """
+        if phase is None:
+            return []
+        out = []
+        for i, argv in enumerate(phase.commands):
+            rendered = [a.format(**subst) for a in argv]
+            if with_symbols and i == len(phase.commands) - 1:
+                rendered += [a.format(**subst) for a in phase.with_symbols]
+            out.append(rendered)
+        return out
 
 
-def _load(path):
+# --------------------------------------------------------------------- loading
+
+def _require(spec, key, where):
+    value = spec.get(key)
+    if not value:
+        raise DescriptorError(f"{where}: missing required key {key!r}")
+    return value
+
+
+def _resolve(root, value, where, what):
+    """Resolve a descriptor path: relative to the package unless absolute.
+
+    Refuses to escape the package. Defence in depth behind the read-only mount,
+    not a substitute for it - the toolchains directory is as trusted as the
+    image was, since a descriptor names commands to execute.
+    """
+    path = value if os.path.isabs(value) else os.path.join(root, value)
+    real = os.path.realpath(path)
+    if not os.path.isabs(value) and not real.startswith(os.path.realpath(root) + os.sep):
+        raise DescriptorError(f"{where}: {what} {value!r} escapes the package directory")
+    return real
+
+
+def _check_placeholders(argv, allowed, where):
+    for element in argv:
+        if not isinstance(element, str):
+            raise DescriptorError(
+                f"{where}: every command element must be a string, got {element!r} "
+                f"(a command is a list of arguments, not a shell string)")
+        for _lit, fieldname, _spec, _conv in string.Formatter().parse(element):
+            if fieldname is None:
+                continue
+            base = fieldname.split(".")[0].split("[")[0]
+            if base not in allowed:
+                raise DescriptorError(
+                    f"{where}: unknown placeholder {{{fieldname}}} "
+                    f"(known: {', '.join(sorted(allowed))})")
+
+
+def _phase(spec, key, allowed, where, single=False):
+    section = spec.get(key)
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise DescriptorError(f"{where}: {key} must be a mapping")
+
+    if single:
+        command = section.get("command")
+        if not command:
+            raise DescriptorError(f"{where}: {key}.command is required")
+        commands = [command]
+    else:
+        commands = section.get("commands")
+        if not commands:
+            raise DescriptorError(f"{where}: {key} is declared but has no commands")
+        if not isinstance(commands, list) or not all(isinstance(c, list) for c in commands):
+            raise DescriptorError(f"{where}: {key}.commands must be a list of argv lists")
+
+    for i, argv in enumerate(commands):
+        _check_placeholders(argv, allowed, f"{where}: {key}.commands[{i}]")
+    with_symbols = tuple(section.get("with_symbols") or ())
+    _check_placeholders(with_symbols, allowed, f"{where}: {key}.with_symbols")
+
+    return Phase(commands=tuple(tuple(c) for c in commands),
+                 with_symbols=with_symbols,
+                 timeout=int(section.get("timeout", 300)))
+
+
+def _load_descriptor(path):
+    """Parse one `toolchain.yml` into one Toolchain per declared variant."""
+    where = path
+    with open(path) as f:
+        spec = yaml.safe_load(f)
+    if not isinstance(spec, dict):
+        raise DescriptorError(f"{where}: must be a mapping")
+
+    schema = spec.get("schema")
+    if schema != SCHEMA_VERSION:
+        raise DescriptorError(
+            f"{where}: unsupported schema {schema!r} (this server understands "
+            f"{SCHEMA_VERSION})")
+
+    root = os.path.realpath(os.path.dirname(path))
+    name = _require(spec, "name", where)
+    arch = _require(spec, "arch", where)
+    version = str(_require(spec, "version", where))
+
+    exe = _resolve(root, _require(spec, "debugger", where), where, "debugger")
+    python = spec.get("python")
+    python = _resolve(root, python, where, "python") if python else None
+
+    allowed = set(PLACEHOLDERS)
+    if python is None:
+        allowed.discard("python")
+
+    core = _phase(spec, "core", allowed, where)
+    report = _phase(spec, "report", allowed, where)
+    interactive = _phase(spec, "interactive", allowed, where, single=True)
+    if interactive is None:
+        raise DescriptorError(
+            f"{where}: interactive.command is required - it is what the pty attaches to")
+
+    modules = None
+    if (msec := spec.get("modules")) is not None:
+        if not isinstance(msec, dict):
+            raise DescriptorError(f"{where}: modules must be a mapping")
+        batch = tuple(msec.get("batch") or ())
+        add_symbols = tuple(msec.get("add_symbols") or ())
+        _check_placeholders(batch, allowed, f"{where}: modules.batch")
+        _check_placeholders(add_symbols, allowed | MODULE_PLACEHOLDERS,
+                            f"{where}: modules.add_symbols")
+        modules = Modules(registry=_require(msec, "registry", f"{where}: modules"),
+                          batch=batch, add_symbols=add_symbols)
+
+    def expand(value):
+        return value.replace("{root}", root) if isinstance(value, str) else value
+
+    base_env = {k: expand(v) for k, v in (spec.get("env") or {}).items()}
+    binds = tuple(expand(b) for b in (spec.get("binds") or ()))
+    library_path = tuple(expand(p) for p in (spec.get("library_path") or ()))
+    requires = tuple(spec.get("requires") or ())
+
+    def build(tc_name, chip, extra_env):
+        return Toolchain(
+            name=tc_name, arch=arch, version=version, exe=exe, root=root,
+            python=python, chip=chip, description=(spec.get("description") or "").strip(),
+            env={**base_env, **extra_env}, binds=binds, library_path=library_path,
+            requires=requires, core=core, report=report, interactive=interactive,
+            modules=modules,
+            # Transition shim, removed with the converter registry in the next
+            # step: the current materialize still selects a Python plugin by
+            # name. Derive it from whether conversion is declared at all.
+            converter=("esp_coredump" if core is not None else "passthrough"),
+        )
+
+    variants = spec.get("variants")
+    if not variants:
+        return [build(name, spec.get("chip"), {})]
+    if not isinstance(variants, dict):
+        raise DescriptorError(f"{where}: variants must be a mapping of id -> settings")
+
+    out = []
+    for vid, variant in variants.items():
+        variant = variant or {}
+        out.append(build(vid, variant.get("chip"),
+                         {k: expand(v) for k, v in (variant.get("env") or {}).items()}))
+    return out
+
+
+def _load_legacy(path):
+    """Parse an older build-time `jail-manifest.json`.
+
+    Kept only so an image with baked manifests keeps working while packages are
+    rolled out; it and the manifest generator go away together.
+    """
     with open(path) as f:
         data = json.load(f)
     missing = [k for k in ("name", "arch", "version", "exe", "converter") if not data.get(k)]
     if missing:
-        raise ValueError(f"{path}: manifest missing required key(s): {', '.join(missing)}")
-    return Toolchain(
-        name=data["name"],
-        arch=data["arch"],
-        version=data["version"],
-        exe=data["exe"],
-        converter=data["converter"],
-        libs=tuple(data.get("libs", ())),
-        extra=tuple(data.get("extra", ())),
+        raise DescriptorError(f"{path}: manifest missing required key(s): {', '.join(missing)}")
+    return [Toolchain(
+        name=data["name"], arch=data["arch"], version=str(data["version"]),
+        exe=data["exe"], converter=data["converter"],
+        libs=tuple(data.get("libs", ())), extra=tuple(data.get("extra", ())),
         env=dict(data.get("env", {})),
-    )
+    )]
 
+
+# ------------------------------------------------------------------- discovery
 
 def roots():
     return [r for r in os.environ.get("GDB_TOOLCHAIN_ROOTS", DEFAULT_ROOTS).split(":") if r]
 
 
+def _signature(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+@functools.lru_cache(maxsize=64)
+def _parse(path, _signature_key, legacy):
+    return tuple(_load_legacy(path) if legacy else _load_descriptor(path))
+
+
+def _tree_signature(root):
+    """A cheap fingerprint of a package, used to invalidate the cached library
+    closure. The descriptor's own mtime is not enough: replacing a binary in
+    place would keep it while changing what the closure should be."""
+    newest = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for name in (*files, ""):
+            try:
+                newest = max(newest, os.stat(os.path.join(dirpath, name)).st_mtime_ns)
+            except OSError:
+                continue
+    return newest
+
+
 def discover():
-    """Scan the configured roots for jail manifests. Uncached - use
-    `installed()` unless you specifically need a fresh read (tests do)."""
+    """Scan the configured roots. Uncached at this level on purpose - a package
+    dropped into the mount must be visible without restarting anything - but
+    each file's *parse* is cached by its signature, so a scan is a handful of
+    stat calls."""
     found = {}
     for root in roots():
-        for path in sorted(glob.glob(os.path.join(root, "**", MANIFEST_NAME), recursive=True)):
-            tc = _load(path)
-            # First root wins, so an override root earlier in the list can
-            # shadow a baked-in toolchain of the same name.
-            found.setdefault(tc.name, tc)
+        for name, legacy in ((DESCRIPTOR_NAME, False), (LEGACY_MANIFEST_NAME, True)):
+            for path in sorted(glob.glob(os.path.join(root, "**", name), recursive=True)):
+                for tc in _parse(path, _signature(path), legacy):
+                    # First root wins, and a package shadows a legacy manifest
+                    # of the same name - which is what makes the migration a
+                    # matter of mounting a directory.
+                    found.setdefault(tc.name, tc)
     return found
 
 
-@functools.lru_cache(maxsize=1)
 def installed():
-    """`{name: Toolchain}` for every toolchain in the image. Cached: the set is
-    fixed at image build time, and this is read on every session start."""
+    """`{name: Toolchain}` for every toolchain visible right now."""
     return discover()
 
 
-def get(name):
-    """Resolve a toolchain *name* (e.g. a `project_settings.toolchain` value) to
-    a Toolchain, or None if it is unset/unknown.
+def _clear_caches():
+    _parse.cache_clear()
+    _package_binds.cache_clear()
 
-    This is the only place a name coming from the database is turned into
-    paths, and it is a dictionary lookup by design - never string
-    interpolation - so a hostile value like `../../etc` or an absolute path
-    cannot reach the filesystem.
+
+# Tests (and anything that rewrites a descriptor in place) clear the parse
+# caches through the same name the old lru_cache exposed.
+installed.cache_clear = _clear_caches
+
+
+def get(name):
+    """Resolve a toolchain name - e.g. a `project_settings.toolchain` value - to
+    a Toolchain, or None if unset or unknown.
+
+    This is the only place a name from the database becomes paths, and it is a
+    dictionary lookup by design, never string interpolation, so a hostile value
+    like `../../etc` cannot reach the filesystem.
     """
     if not name:
         return None
@@ -123,3 +406,66 @@ def get(name):
 def names():
     """Sorted toolchain names, for the project-settings dropdown."""
     return sorted(installed())
+
+
+# --------------------------------------------------------------- library closure
+
+_LDD_ARROW = " => /"
+
+
+def ldd_closure(path):
+    """Absolute paths of every shared object `path` needs, including the ELF
+    interpreter.
+
+    The interpreter is listed *without* an `=>` - `/lib64/ld-linux-x86-64.so.2
+    (0x...)`. Missing it produces a jail that has every library but cannot exec
+    anything, which presents as a command yielding no output at all and nothing
+    to explain why.
+    """
+    try:
+        proc = subprocess.run(["ldd", path], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode != 0:
+        return set()            # static binaries report "not a dynamic executable"
+
+    libs = set()
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        if _LDD_ARROW in line:
+            libs.add(line.split(" => ")[1].split(" (")[0])
+        elif stripped.startswith("/") and "(0x" in stripped:
+            libs.add(stripped.split(" (")[0])
+    return libs
+
+
+@functools.lru_cache(maxsize=16)
+def _package_binds(root, exe, python, binds, _tree_key):
+    """The read-only bind list for a package.
+
+    The closure covers every declared executable *and* every shared object
+    inside the package - not just the executables. Measured on a real package:
+    `ldd` on the bundled interpreter reports 6 libraries, but the true closure
+    is 8, because extension modules pull `libcrypt` and `libgcc_s` and neither
+    is visible on the interpreter itself. That is the same dlopen trap that once
+    forced binding a whole system library directory into the conversion jail.
+    """
+    closure = set()
+    for path in filter(None, (exe, python)):
+        closure |= ldd_closure(path)
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if ".so" not in name:
+                continue
+            path = os.path.join(dirpath, name)
+            if os.path.isfile(path) and not os.path.islink(path):
+                closure |= ldd_closure(path)
+
+    # Anything inside the package is already covered by binding the package.
+    closure = {p for p in closure if not p.startswith(root + os.sep)}
+
+    seen = {}
+    for path in (root, *sorted(closure), *binds):
+        seen[path] = None
+    return tuple(seen)
