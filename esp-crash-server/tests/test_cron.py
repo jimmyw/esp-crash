@@ -302,11 +302,12 @@ def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch
 
 
 def test_cron_ai_summary_includes_pre_grant_backlog(client, db_conn, monkeypatch, app):
-    """Granting esp-crash-bot access to a project no longer excludes crash
-    history from before the grant - now that a review is written once per
-    (project_name, signature) group rather than per crash, granting access
-    only means reviewing a project's handful of distinct relations, not
-    backfilling every historical crash."""
+    """Granting esp-crash-bot access to a project does not exclude crash
+    history from before the grant - a review is written once per
+    (project_name, signature) group rather than per crash, so granting
+    access means reviewing a project's distinct relations regardless of when
+    the grant happened. Both crashes here sit inside the recency window;
+    that window is a separate gate, covered by its own test below."""
     from app import decode_client
     from app.routes import cron
 
@@ -321,10 +322,12 @@ def test_cron_ai_summary_includes_pre_grant_backlog(client, db_conn, monkeypatch
     device_id = helpers.create_device(db_conn, "dev-cron-ai-backlog")
     helpers.create_elf_file(db_conn, "proj-cron-ai-backlog", "1.0")
 
-    # Already-symbolicated crash from before the grant - now eligible too.
+    # Already-symbolicated crash from before the grant - eligible too, since
+    # the grant date is not a filter. Kept inside the recency window so this
+    # test covers the grant-date question only.
     old_crash = helpers.create_crash(
         db_conn, "proj-cron-ai-backlog", "1.0", device_id, crash_dmp=b"raw-dump",
-        dump="old crash, already symbolicated", date=grant_time - timedelta(days=30),
+        dump="old crash, already symbolicated", date=grant_time - timedelta(days=2),
         signature="1" * 64,
     )
     # New, already-symbolicated crash from after the grant - also eligible.
@@ -360,6 +363,105 @@ def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, 
     resp = client.get("/cron")
     assert resp.status_code == 200
     assert calls == []
+
+
+def test_cron_ai_summary_skips_groups_whose_newest_crash_is_outside_the_window(
+        client, db_conn, monkeypatch, app):
+    """A signature group is only worth an API call while it is still
+    happening. A group whose newest crash predates AI_REVIEW_WINDOW_DAYS is
+    never picked up - which is what keeps a large historical backlog from
+    turning into one API call per dormant group."""
+    from app import decode_client
+    from app.routes import cron
+
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
+    calls = []
+    monkeypatch.setattr(cron, "summarize_and_tag",
+                        lambda crash_id, project_name: calls.append(crash_id))
+    monkeypatch.setenv("AI_REVIEW_WINDOW_DAYS", "7")
+
+    now = datetime.utcnow()
+    helpers.create_project(db_conn, "proj-cron-ai-window", github_user="esp-crash-bot", date=now)
+    _configure_ai(app)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-window")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-window", "1.0")
+
+    # Dormant group: newest (only) crash is well outside the window.
+    helpers.create_crash(
+        db_conn, "proj-cron-ai-window", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="dormant group", date=now - timedelta(days=30), signature="a" * 64,
+    )
+    # Active group: crashed yesterday.
+    active = helpers.create_crash(
+        db_conn, "proj-cron-ai-window", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="active group", date=now - timedelta(days=1), signature="b" * 64,
+    )
+
+    assert client.get("/cron").status_code == 200
+    assert calls == [active]
+
+
+def test_cron_ai_summary_window_looks_at_the_newest_crash_in_the_group(
+        client, db_conn, monkeypatch, app):
+    """A long-running group qualifies on its newest crash, and the crash
+    handed to the reviewer is that newest one - not an ancient member that
+    happens to share the signature."""
+    from app import decode_client
+    from app.routes import cron
+
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
+    calls = []
+    monkeypatch.setattr(cron, "summarize_and_tag",
+                        lambda crash_id, project_name: calls.append(crash_id))
+    monkeypatch.setenv("AI_REVIEW_WINDOW_DAYS", "7")
+
+    now = datetime.utcnow()
+    helpers.create_project(db_conn, "proj-cron-ai-newest", github_user="esp-crash-bot", date=now)
+    _configure_ai(app)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-newest")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-newest", "1.0")
+
+    helpers.create_crash(
+        db_conn, "proj-cron-ai-newest", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="ancient member", date=now - timedelta(days=400), signature="c" * 64,
+    )
+    recent = helpers.create_crash(
+        db_conn, "proj-cron-ai-newest", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="recent member", date=now - timedelta(hours=2), signature="c" * 64,
+    )
+
+    assert client.get("/cron").status_code == 200
+    assert calls == [recent]
+
+
+def test_cron_ai_summary_window_disabled_by_zero(client, db_conn, monkeypatch, app):
+    """AI_REVIEW_WINDOW_DAYS=0 removes the recency gate entirely, restoring
+    the previous review-everything behaviour."""
+    from app import decode_client
+    from app.routes import cron
+
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
+    calls = []
+    monkeypatch.setattr(cron, "summarize_and_tag",
+                        lambda crash_id, project_name: calls.append(crash_id))
+    monkeypatch.setenv("AI_REVIEW_WINDOW_DAYS", "0")
+
+    now = datetime.utcnow()
+    helpers.create_project(db_conn, "proj-cron-ai-nowindow", github_user="esp-crash-bot", date=now)
+    _configure_ai(app)
+
+    device_id = helpers.create_device(db_conn, "dev-cron-ai-nowindow")
+    helpers.create_elf_file(db_conn, "proj-cron-ai-nowindow", "1.0")
+
+    dormant = helpers.create_crash(
+        db_conn, "proj-cron-ai-nowindow", "1.0", device_id, crash_dmp=b"raw-dump",
+        dump="dormant group", date=now - timedelta(days=365), signature="d" * 64,
+    )
+
+    assert client.get("/cron").status_code == 200
+    assert calls == [dormant]
 
 
 def test_cron_ai_summary_failure_is_logged_and_skipped(client, db_conn, monkeypatch, app):
