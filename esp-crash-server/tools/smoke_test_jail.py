@@ -18,6 +18,10 @@ properly configured container. Everything that *can* be checked without
 namespaces is checked unconditionally:
 
   * every path the manifest records still exists in the image;
+  * every path-valued environment variable is actually inside the jail, and an
+    xtensa toolchain names a per-chip core configuration - both cases where a
+    wrong value yields plausible-looking but incorrect output rather than an
+    error;
   * the debugger's current ldd closure is covered by the manifest, so a
     manifest generated earlier in the build cannot go stale silently;
   * the debugger binary actually executes and identifies itself;
@@ -47,6 +51,51 @@ def _check_paths_exist(tc):
     missing = [p for p in tc.ro_binds if not os.path.exists(p)]
     if missing:
         raise Failure(f"manifest references missing path(s): {', '.join(missing)}")
+
+
+def _check_env_paths_are_present(tc):
+    """Every path-valued environment variable must actually exist in the jail.
+
+    This guards a whole class of silent misbehaviour. Espressif's xtensa gdb,
+    for instance, picks its *core configuration* from XTENSA_GNU_CONFIG; point
+    that at a file the sandbox does not contain and gdb still starts, still
+    reports the right architecture, and still produces a backtrace - just a
+    wrong one ("0x84870840 in ?? ()" instead of the real frames). Nothing
+    errors, so only a check like this catches it.
+
+    A path counts as present if it is bound, sits under something bound, or is
+    an ancestor of something bound (bubblewrap creates the intermediate
+    directories for a bind).
+    """
+    binds = tc.ro_binds
+    for key, value in sorted((tc.env or {}).items()):
+        if not value.startswith("/"):
+            continue
+        if not os.path.exists(value):
+            raise Failure(f"{key}={value} does not exist in the image")
+        covered = any(
+            value == b or value.startswith(b.rstrip("/") + "/")
+            or b.startswith(value.rstrip("/") + "/")
+            for b in binds
+        )
+        if not covered:
+            raise Failure(
+                f"{key}={value} is not bound into the jail (add it to --extra), "
+                f"so the debugger would silently fall back to a default")
+
+
+def _check_xtensa_has_a_core_config(tc):
+    """Xtensa is a configurable architecture; a build without the right core
+    configuration decodes frames incorrectly rather than refusing. So an
+    xtensa toolchain that does not name one is a broken toolchain, and the
+    chip has to be part of the identity a project selects."""
+    if tc.arch != "xtensa":
+        return
+    if "XTENSA_GNU_CONFIG" not in (tc.env or {}):
+        raise Failure(
+            "xtensa toolchain does not set XTENSA_GNU_CONFIG; backtraces would "
+            "be silently wrong. Register one toolchain per chip, each pointing "
+            "at its own lib/xtensa_<chip>.so")
 
 
 def _check_closure_covered(tc):
@@ -111,6 +160,8 @@ def main():
         try:
             _check_paths_exist(tc)
             _check_closure_covered(tc)
+            _check_env_paths_are_present(tc)
+            _check_xtensa_has_a_core_config(tc)
             version = _check_runs(tc)
             _check_converter(tc)
             jailed = _try_jail(tc, workdir)

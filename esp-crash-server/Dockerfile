@@ -114,18 +114,38 @@ COPY tools/ tools/
 # a real bubblewrap jail. Doing both at build time is the point: an incomplete
 # library closure becomes a failed build here instead of a debugger that dies
 # with "error while loading shared libraries" in front of a user later.
+#
+# One entry per *chip*, not one per toolchain directory. Xtensa is a
+# configurable architecture: the same gdb binary produces a correct backtrace
+# or complete garbage depending on the core configuration it is given, which
+# Espressif supplies as a per-chip shared object selected by XTENSA_GNU_CONFIG.
+# Without it a crashed ESP32 frame decodes as "0x84870840 in ?? ()" while the
+# batch decode of the same core resolves it fully - so the chip must be part of
+# the toolchain identity that a project selects, not left to a default.
+#
+# The per-chip `xtensa-esp32*-elf-gdb` launchers do exactly this, but they are
+# Rust programs that resolve themselves through /proc/self/exe and so cannot
+# run in a jail without /proc. Setting the variable directly gets the same
+# result and keeps /proc out of the sandbox.
 ARG ROM_ELFS_VERSION=20241011
 ARG GDB_VERSION=16.3_20250913
-RUN python tools/make_jail_manifest.py \
-  --name xtensa-esp-elf \
+RUN set -eux; \
+  TC="/opt/esp/tools/xtensa-esp-elf-gdb/${GDB_VERSION}/xtensa-esp-elf-gdb"; \
+  for chip in esp32 esp32s2 esp32s3; do \
+  python tools/make_jail_manifest.py \
+  --name "xtensa-${chip}" \
   --arch xtensa \
   --version "${GDB_VERSION}" \
-  --exe "/opt/esp/tools/xtensa-esp-elf-gdb/${GDB_VERSION}/xtensa-esp-elf-gdb/bin/xtensa-esp-elf-gdb-no-python" \
+  --exe "${TC}/bin/xtensa-esp-elf-gdb-no-python" \
   --converter esp_coredump \
+  --extra "${TC}/lib/xtensa_${chip}.so" \
   --extra "/opt/esp/tools/esp-rom-elfs/${ROM_ELFS_VERSION}" \
   --extra /opt/esp/idf/tools/idf_py_actions/roms.json \
+  --env "XTENSA_GNU_CONFIG=${TC}/lib/xtensa_${chip}.so" \
   --env "ESP_ROM_ELF_DIR=/opt/esp/tools/esp-rom-elfs/${ROM_ELFS_VERSION}/" \
-  --env IDF_PATH=/opt/esp/idf
+  --env IDF_PATH=/opt/esp/idf \
+  --out "/opt/toolchains/xtensa-${chip}/jail-manifest.json"; \
+  done
 RUN python tools/smoke_test_jail.py
 
 ENV FLASK_APP=server.py

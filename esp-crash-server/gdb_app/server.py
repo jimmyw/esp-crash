@@ -388,8 +388,21 @@ def build_app():
             media_type="application/json",
         )
 
-    return Starlette(routes=[
-        Route("/health", health),
-        Route("/v1/info", info),
-        WebSocketRoute("/v1/session", server.session),
-    ])
+    def routes_at(prefix):
+        return [
+            Route(f"{prefix}/health", health),
+            Route(f"{prefix}/v1/info", info),
+            WebSocketRoute(f"{prefix}/v1/session", server.session),
+        ]
+
+    # Also serve under a path prefix when one is configured, so this can sit
+    # behind a path route on an existing domain (wss://host/gdb/v1/session)
+    # instead of needing its own subdomain, DNS record and certificate. Both
+    # forms are registered rather than only the prefixed one, so the reverse
+    # proxy may either strip the prefix or pass it through - and the container
+    # stays directly reachable for health checks either way.
+    prefix = os.environ.get("GDB_PATH_PREFIX", "").strip().rstrip("/")
+    if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+
+    return Starlette(routes=routes_at("") + (routes_at(prefix) if prefix else []))
