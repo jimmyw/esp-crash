@@ -247,6 +247,12 @@ upload the unstripped `.debug.elf` so symbols are available. `app_sha1` must be
 
 ### Decoding locally with the script
 
+This runs on a developer host, not in the server image — that image ships no
+debugger and no `esp-coredump`, since decoding happens inside the sandboxed
+debug service. Keep it for reproducing a decode by hand, and as the reference
+to diff against when a sandboxed report looks wrong. It needs IDF,
+`esp-coredump` and a per-chip gdb on `PATH`.
+
 ```bash
 python esp-crash-server/decode_module_coredump.py info \
     --core crash.dmp \
@@ -342,18 +348,27 @@ open, and is destroyed when you close the page.
 
 ### Enabling it
 
-1. Set `GDB_TICKET_SECRET` and `GDB_PUBLIC_WS_URL` on the `backend` service, and
+1. **Build a toolchain package** and mount it read-only at `/opt/toolchains` on
+   `backend`, `backend-dev` and `esp-crash-gdb` — see
+   [Toolchain packages](#toolchain-packages). Without one there are no
+   toolchains, so no sessions and no batch decoding.
+2. Set `GDB_TICKET_SECRET` and `GDB_PUBLIC_WS_URL` on the `backend` service, and
    the *same* `GDB_TICKET_SECRET` on the `esp-crash-gdb` service (see
    `docker-compose.yml.template`). With either unset, no Debug link appears.
-2. Point your reverse proxy at the `esp-crash-gdb` container's port 8002, with
-   WebSocket upgrade allowed.
-3. In **project settings → Debug toolchain**, pick a toolchain. There is
-   deliberately no default: loading a build into a debugger for the wrong
-   architecture produces confident nonsense rather than an error, so a project
-   with none set simply offers no session.
+3. Set a shared `DECODE_SERVICE_TOKEN` on `cron` and `esp-crash-gdb`, plus
+   `DECODE_SERVICE_URL` on `cron`, or cron cannot decode at all — the web and
+   cron images carry no debugger.
+4. Point your reverse proxy at the `esp-crash-gdb` container's port 8002, with
+   WebSocket upgrade allowed and `timeout tunnel` set.
+5. In **project settings → Debug toolchain**, pick a toolchain. There is
+   deliberately no default *per project*: loading a build into a debugger for
+   the wrong architecture produces confident nonsense rather than an error. A
+   project with none set offers no interactive session and falls back to
+   `GDB_DEFAULT_TOOLCHAIN` for batch decoding.
 
-`GET /v1/info` on the service lists the toolchains it has and how many session
-slots are free.
+`GET /v1/info` on the service lists the toolchains it found, how many slots each
+pool has free, and whether the decode endpoint is enabled — the quickest way to
+tell whether the mount actually arrived.
 
 ### How the sandbox works
 
@@ -373,10 +388,13 @@ interactive console are very different risks:
   blocklist rejected them.
 
 Each jail is an empty tmpfs root, remounted read-only, with only an explicitly
-enumerated set of read-only binds on top — recorded per toolchain at image build
-time from the debugger's `ldd` closure, so a base-image change that breaks it
-fails the build rather than a debug session. The jail has no network and no
-`/proc`, and the only writable path is its own work directory.
+enumerated set of read-only binds on top: the toolchain package, the `ldd`
+closure of every executable it names, and whatever else its descriptor asks
+for. The closure is computed when the toolchain is loaded rather than recorded
+when it was built, because it belongs to the *runtime* image — a package built
+on Arch resolves `/usr/lib/libc.so.6` where the Debian-based server image needs
+`/lib/x86_64-linux-gnu/libc.so.6`. The jail has no network and no `/proc`, and
+the only writable path is its own work directory.
 
 Sessions cannot reach each other. Every live session gets a dedicated uid from a
 pool of accounts baked into the image, so a cross-session `ptrace` or `kill` is
@@ -387,22 +405,169 @@ directory holding session work dirs does not exist inside a jail, so peers
 cannot be named. The database credentials stay in the service process; the
 debugger never has database access or a network.
 
+Interactive sessions and batch decoding draw from **disjoint** identity pools —
+28 and 4 of the 32 accounts by default. Partitioning rather than sharing is what
+guarantees a decode backlog cannot take the last slot an interactive user is
+waiting for.
+
 Access is checked twice: the web app authorises the request against the same
 `project_auth` ACLs as everything else and issues a 60-second single-use ticket,
 and the debug service independently re-checks that access against the database
 before starting anything — so a leaked signing key alone grants nothing, and an
 ACL revoked a second ago takes effect immediately.
 
-Sessions end on disconnect, after 5 minutes idle, or after 30 minutes total,
+Sessions end on disconnect, after 30 minutes idle, or after 4 hours total,
 whichever comes first; the process group is killed and the work directory
-removed.
+removed. The idle clock only advances on input from the browser, and reading a
+backtrace while thinking is the most common thing anyone does in a debugger, so
+those limits are deliberately generous — they exist to reclaim crashed browsers
+and dropped networks, not to hurry anyone along.
+
+If you put the service behind HAProxy, set **`timeout tunnel`** on its backend.
+Once a WebSocket is upgraded that is the timeout which governs it, falling back
+to `timeout server` when unset — and a short server timeout drops an idle
+session mid-use.
+
+### Batch decoding runs in the same sandbox
+
+The pre-analysis that fills in `crash.dump` used to shell out to `esp-coredump`
+and gdb inside the cron process. It now calls `POST /v1/decode` on the debug
+service, so the parsing of device-supplied bytes is sandboxed on the batch path
+too, not just the interactive one — and the web and cron images need no debugger
+at all.
+
+That endpoint performs an **unscoped** read (any crash, any project), because
+cron processes every project. It is therefore gated on its own
+`DECODE_SERVICE_TOKEN`, is reachable only on the internal network, is *not*
+served under `GDB_PATH_PREFIX` so the reverse proxy cannot expose it, and is not
+registered at all when that token is unset.
+
+`GDB_DEFAULT_TOOLCHAIN` is used for projects that have not chosen one. Without
+it, crashes in unconfigured projects would simply stop being decoded.
+
+## Toolchain packages
+
+A toolchain is a **package**: a self-contained directory holding a debugger,
+whatever data files it needs, optionally its own interpreter, and a
+`toolchain.yml` describing how to drive it. Packages are built outside the image
+and bind-mounted read-only, so adding support for a chip family is dropping in a
+directory — no rebuild, no redeploy.
+
+```sh
+# build one (downloads and verifies everything, ~112 MB for Espressif)
+./esp-crash-server/toolchains/recipes/xtensa-esp.sh --out /opt/esp-crash-toolchains
+
+# or produce a versioned tarball to copy to another machine
+./esp-crash-server/toolchains/recipes/xtensa-esp.sh --out ./dist --tarball
+```
+
+Then mount it read-only at `/opt/toolchains` on `backend`, `backend-dev` and
+`esp-crash-gdb` (see `docker-compose.yml.template`). The web app reads the
+descriptors for the settings dropdown and to decide whether to offer the Debug
+link; the debug service reads them to run sessions.
+
+### The descriptor
+
+The format is deliberately not gdb- or Espressif-shaped. The service needs
+exactly four things from a toolchain — a file the debugger can open, report
+text, an interactive command, and optionally a way to enumerate and symbolise
+runtime-loaded modules — so those are the named phases, and everything else is
+the vendor's business:
+
+```yaml
+schema: 1
+name: xtensa-esp
+arch: xtensa
+version: "16.3_20250913"
+
+debugger: gdb/bin/xtensa-esp-elf-gdb-no-python
+python: python/bin/python3          # optional; referenced as {python}
+
+env:
+  ESP_ROM_ELF_DIR: "{root}/rom-elfs/"
+binds: [/usr/lib/locale, /lib/terminfo, /usr/share/terminfo]
+requires: [prog]
+
+core:                               # raw artifact -> a file the debugger opens
+  commands:
+    - ["{python}", -m, esp_coredump, info_corefile, -t, raw,
+       -c, "{dump}", --save-core, "{core}", --gdb, "{debugger}", "{prog}"]
+
+report:                             # the text stored as crash.dump
+  with_symbols: [--extra-gdbinit-file, "{symbols_file}"]
+  commands: [[...]]
+
+interactive:                        # what the pty attaches to
+  command: ["{debugger}", -nx, -q, "{prog}", -ex, "core-file {core}"]
+
+modules:                            # omit entirely if the target has none
+  registry: esp_crash_modmap
+  batch: ["{debugger}", -batch, -nx, "{prog}", -ex, "core-file {core}"]
+  add_symbols:
+    - "add-symbol-file {elf} {text:#x} -s .data {data:#x} ..."
+
+variants:                           # one payload, several selectable ids
+  xtensa-esp32:   { chip: esp32,   env: { XTENSA_GNU_CONFIG: "{root}/gdb/lib/xtensa_esp32.so" } }
+  xtensa-esp32s2: { chip: esp32s2, env: { XTENSA_GNU_CONFIG: "{root}/gdb/lib/xtensa_esp32s2.so" } }
+```
+
+Placeholders are a closed set (`{root} {debugger} {python} {dump} {prog} {core}
+{symbols_file} {work}`, plus the module fields inside `add_symbols`), and an
+unrecognised one is a load error rather than a literal that fails somewhere far
+away. Commands are argv lists substituted per element and executed without a
+shell, so no descriptor value can inject an argument.
+
+`variants` exists because the three Xtensa chips differ only in a ~400 KB core
+configuration object. Per-chip packages would triplicate a 9 MB debugger and an
+86 MB interpreter for that.
+
+**The toolchains directory is as trusted as the image was** — a descriptor names
+commands to execute. Mount it read-only, own it as root, and never let the
+`gdbrun*` accounts write to it.
 
 ### Adding another architecture
 
-The toolchain layer is vendor-neutral: a toolchain is a build-time descriptor
-(`{name, arch, exe, libs, extra, env, converter}`), and the raw-artifact-to-core
-step is a named converter in `gdb_app/converters/`. Adding `riscv32-esp-elf`,
-`arm-none-eabi` or `gdb-multiarch` means one more `install_toolchain.sh` call
-and one more `make_jail_manifest.py` call in the Dockerfile — a table row, not
-new code. Targets that already upload a real ELF core use the `passthrough`
-converter and pull no interpreter into any jail.
+Most of the work is *omission*. A target whose crash artifact is already an ELF
+core needs no `core` phase; one with no runtime module registry needs no
+`modules` section; one whose report comes from the debugger itself needs no
+interpreter. That is the whole ARM descriptor:
+
+```yaml
+schema: 1
+name: arm-none-eabi
+arch: arm
+version: "10.2_2020q4"
+debugger: bin/arm-none-eabi-gdb
+binds: [/usr/lib/locale, /lib/terminfo]
+requires: [prog]
+
+report:
+  commands:
+    - ["{debugger}", -batch, -nx, "{prog}", -ex, "core-file {core}",
+       -ex, "thread apply all bt full"]
+
+interactive:
+  command: ["{debugger}", -nx, -q, "{prog}", -ex, "core-file {core}"]
+```
+
+Add a recipe beside `xtensa-esp.sh` to assemble the package, and
+`toolchains/recipes/verify.py` will check it: required keys, a debugger that
+runs, an interpreter that starts, a complete library closure, every path-valued
+environment variable resolving inside the package, and every placeholder known.
+
+Why that verification is not optional: Xtensa is a *configurable* architecture,
+and the same gdb binary yields a correct backtrace or confident nonsense
+depending on the core configuration it is handed — reporting `xtensa` either
+way. A missing `XTENSA_GNU_CONFIG` produced `0x84870840 in ?? ()` where the
+batch decode of the same core resolved every frame. Nothing errored. That class
+of failure is what the guards exist for.
+
+### Why the interpreter is bundled
+
+`esp-coredump` is a Python program, and its extension modules `dlopen`
+libraries that `ldd` on the interpreter never reveals — `binascii` needing libz
+is the one that bit. The old answer was to bind `/lib/<multiarch>` wholesale
+into the conversion jail. A package carries a relocatable CPython with those
+libraries inside it, so the jail's entire external need is nine glibc libraries
+and the wholesale bind is gone. An integration test asserts no whole directory
+is bound from outside a package unless its descriptor asked for it by name.

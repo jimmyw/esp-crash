@@ -7,6 +7,27 @@ to set up their own instance, you are free to do so.
 
 Use the provided Dockerfile to host the server part, and you need to configure git credentials and sql server yourself.
 
+## Toolchain packages (required for crash decoding)
+
+The image deliberately ships **no debugger and no `esp-coredump`**. Both crash
+decoding and the interactive in-browser gdb sessions run inside a bubblewrap
+sandbox in the separate `esp-crash-gdb` service, using a *toolchain package*
+mounted from the host:
+
+```sh
+./toolchains/recipes/xtensa-esp.sh --out /opt/esp-crash-toolchains
+```
+
+Then bind-mount that directory read-only at `/opt/toolchains` on `backend`,
+`backend-dev` and `esp-crash-gdb`, and set `DECODE_SERVICE_URL` plus a shared
+`DECODE_SERVICE_TOKEN` (see `docker-compose.yml.template`). Without a package
+mounted, `crash.dump` is never populated and no Debug link appears - cron logs
+an error each tick saying so rather than storing anything.
+
+`GET /v1/info` on the debug service lists what it found. The full explanation of
+the package format, and how to add another architecture, is in the top-level
+[README](../README.md#toolchain-packages).
+
 ## Slack Integration
 
 ESP-Crash now supports native Slack integration for crash notifications with rich formatting and interactive elements.

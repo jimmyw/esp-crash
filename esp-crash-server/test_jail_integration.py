@@ -171,6 +171,57 @@ def test_the_work_root_is_not_even_visible_inside_the_jail(lease, toolchain):
     assert lease.session_id not in out
 
 
+# ------------------------------------------------ what the package brought
+
+def test_the_conversion_jail_binds_no_whole_system_library_directory(toolchain):
+    """The bundled interpreter retired a coarse workaround, and this pins it.
+
+    esp-coredump's extension modules dlopen libraries that `ldd` on the
+    interpreter never reveals - binascii needing libz was the one that bit -
+    and the old converter answered by binding /lib/<multiarch> and /lib64
+    wholesale into the conversion jail. A package carries those inside itself,
+    so the only directory a jail should mount from outside is one the
+    descriptor asked for by name.
+    """
+    spec = jail.JailSpec(toolchain=toolchain, workdir="/tmp", uid=os.getuid(),
+                         gid=os.getgid(), tier=jail.CONVERT)
+    declared = {os.path.realpath(b) for b in (toolchain.binds or ())}
+    for bind in spec.all_ro_binds():
+        if toolchain.root and bind.startswith(toolchain.root):
+            continue                      # inside the package, by design
+        if os.path.isdir(bind):
+            assert os.path.realpath(bind) in declared, (
+                f"{bind} is a whole directory bound from outside the package "
+                f"but is not in the descriptor's `binds`")
+
+
+def test_the_bundled_interpreter_runs_inside_the_conversion_jail(toolchain, lease):
+    """If the package declares an interpreter, it must actually work in the
+    sandbox - including the extension modules whose dependencies ldd hides."""
+    if not toolchain.python:
+        pytest.skip("this toolchain bundles no interpreter")
+    code, out = run(lease, toolchain,
+                    [toolchain.python, "-c",
+                     "import binascii, zlib, ssl, hashlib, ctypes; print('imports ok')"],
+                    timeout=120)
+    assert code == 0 and "imports ok" in out, out[:400]
+
+
+def test_every_path_valued_environment_variable_exists_inside_the_jail(toolchain, lease):
+    """A variable pointing outside the sandbox does not error - the debugger
+    silently falls back to a default and produces plausible, wrong output. That
+    is the failure mode this whole design exists to prevent, so it is asserted
+    against the real jail rather than only at load time."""
+    for key, value in (toolchain.env or {}).items():
+        if not value.startswith("/"):
+            continue
+        target = value.rstrip("/")
+        covered = any(target == b or target.startswith(b.rstrip("/") + "/")
+                      or b.startswith(target + "/")
+                      for b in toolchain.ro_binds)
+        assert covered, f"{key}={value} is not inside any bind"
+
+
 # ------------------------------------------------- one session versus another
 
 def test_concurrent_sessions_get_distinct_identities(pool):
