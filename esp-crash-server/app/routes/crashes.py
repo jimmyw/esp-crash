@@ -13,7 +13,7 @@ from flask import current_app, redirect, send_file, url_for
 import toolchains
 from sqlalchemy import delete, func, select, update
 
-from .. import decode
+# The zip is built from stored data now; no decoder needed here.
 from ..auth import auth_filter, auth_project_in_filter, login_required
 from ..models import Crash, CrashRelation, CrashRelationTag, Device, ElfFile, ModuleElf, ProjectAuth, ProjectSettings, Tag, db
 from ..rendering import render_template
@@ -175,7 +175,7 @@ def download_crash(crash_id):
     crash = db.session.execute(
         select(
             Crash.crash_id, Crash.date, Crash.project_name, Device.ext_device_id,
-            Crash.project_ver, Crash.crash_dmp,
+            Crash.project_ver, Crash.crash_dmp, Crash.module_map,
         )
         .select_from(Crash)
         .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
@@ -211,37 +211,43 @@ def download_crash(crash_id):
         dmp.close()
         zip_file.write(dmp.name,  arcname="crash_{}/crash_{}.dmp".format(crash_id, crash_id))
 
-        # Read the registry and resolve module ELFs so the package can ship the
-        # module debug ELFs plus a generated gdbinit with literal add-symbol-file
-        # lines (no gdb-Python needed). Reading needs the program ELF, so use the
-        # first (most recent) elf_image.
-        prog_tmp = None
-        loaded = []
-        core_elf = None
-        mod_status = []
+        # Module symbols come from the crash's stored module_map, which records
+        # each module's sha1 and section addresses at decode time. Reading the
+        # registry here would mean running a debugger, and decoding now happens
+        # inside the sandboxed debug service - so a plain file download must not
+        # depend on either.
+        module_map = crash.get("module_map") or []
+        # Crashes decoded before section addresses were recorded have the names
+        # but not the placement, and there is no way to reconstruct it without
+        # the core. Those get the module ELFs and an explanation rather than a
+        # gdbinit; re-running "Regenerate crash" produces a complete package.
+        placed = [m for m in module_map if m.get("text") is not None]
+        unplaced = [m for m in module_map if m.get("text") is None]
         try:
-            if elf_images:
-                try:
-                    first = bz2.decompress(elf_images[0]["elf_file"])
-                except IOError:
-                    first = elf_images[0]["elf_file"]
-                with tempfile.NamedTemporaryFile(suffix=".elf", delete=False, prefix="prog_") as pf:
-                    pf.write(first)
-                    prog_tmp = pf.name
-                _regs, loaded, _base, core_elf, mod_status = \
-                    decode._resolve_modules_for_dump(dmp.name, prog_tmp)
             gdbinit_lines = []
-            if loaded:
-                for m in loaded:
-                    safe = re.sub(r'[^A-Za-z0-9._-]', '_', m["name"])
-                    arc = "modules/{}.elf".format(safe)
-                    zip_file.write(m["elf"], arcname="crash_{}/{}".format(crash_id, arc))
-                    gdbinit_lines.append(
-                        "add-symbol-file {arc} {text:#x} -s .data {data:#x} "
-                        "-s .bss {bss:#x} -s .rodata {rodata:#x}".format(
-                            arc=arc, text=m["text"], data=m["data"],
-                            bss=m["bss"], rodata=m["rodata"])
-                    )
+            missing = []
+            for m in placed:
+                blob = db.session.execute(
+                    select(ModuleElf.elf_file).where(ModuleElf.app_sha1 == m["sha1"]).limit(1)
+                ).scalars().first()
+                if blob is None:
+                    missing.append("# module {} (sha1 {}...): symbols not available".format(
+                        m["name"], (m.get("sha1") or "")[:8]))
+                    continue
+                try:
+                    module_elf = bz2.decompress(bytes(blob))
+                except IOError:
+                    module_elf = bytes(blob)
+                safe = re.sub(r'[^A-Za-z0-9._-]', '_', m["name"])
+                arc = "modules/{}.elf".format(safe)
+                zip_file.writestr("crash_{}/{}".format(crash_id, arc), module_elf)
+                gdbinit_lines.append(
+                    "add-symbol-file {arc} {text:#x} -s .data {data:#x} "
+                    "-s .bss {bss:#x} -s .rodata {rodata:#x}".format(
+                        arc=arc, text=m["text"], data=m["data"],
+                        bss=m["bss"], rodata=m["rodata"])
+                )
+            if gdbinit_lines:
                 zip_file.writestr(
                     "crash_{}/module_symbols.gdbinit".format(crash_id),
                     "# Literal add-symbol-file lines for this crash's modules.\n"
@@ -249,13 +255,19 @@ def download_crash(crash_id):
                     "# resolve. No gdb-Python required.\n"
                     + "\n".join(gdbinit_lines) + "\n",
                 )
-                missing = [s for s in mod_status if "symbols not available" in s]
-                if missing:
-                    zip_file.writestr(
-                        "crash_{}/MODULES_README.txt".format(crash_id),
-                        "Modules referenced by this crash with no uploaded symbols "
-                        "(their frames will not be symbolicated):\n\n" + "\n".join(missing) + "\n",
-                    )
+            if unplaced:
+                missing.append(
+                    "# This crash was decoded before module section addresses were "
+                    "recorded, so no\n# add-symbol-file lines could be generated for: "
+                    + ", ".join(m["name"] for m in unplaced)
+                    + ".\n# Press \"Regenerate crash\" on the crash page to produce a "
+                      "complete package.")
+            if missing:
+                zip_file.writestr(
+                    "crash_{}/MODULES_README.txt".format(crash_id),
+                    "Notes on this crash's runtime modules:\n\n"
+                    + "\n".join(missing) + "\n",
+                )
 
             for elf_image in elf_images:
                 # Create temporary files to store crash and elf data
@@ -293,21 +305,9 @@ def download_crash(crash_id):
                 zip_file.write(script.name, arcname="crash_{}/elf_{}.sh".format(crash_id, elf_image["elf_file_id"]))
                 os.unlink(script.name)
         finally:
-            for m in loaded:
-                try:
-                    os.remove(m["elf"])
-                except OSError:
-                    pass
-            if core_elf:
-                try:
-                    os.remove(core_elf)
-                except OSError:
-                    pass
-            if prog_tmp:
-                try:
-                    os.remove(prog_tmp)
-                except OSError:
-                    pass
+            # Module ELFs are written into the archive from memory now, and no
+            # core file or program ELF is extracted at all, so the only
+            # temporary left to clean is the decompressed dump.
             try:
                 os.remove(dmp.name)
             except OSError:

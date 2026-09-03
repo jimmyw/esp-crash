@@ -7,6 +7,7 @@ service) rather than a real cron/celery job - kept as-is for this phase."""
 import os
 import bz2
 import tempfile
+import time
 
 import requests
 import slack_sdk
@@ -16,7 +17,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import decode_module_coredump as mod_decoder
-from .. import decode
+from .. import decode, decode_client
 from ..ai_tagging import summarize_and_tag
 from ..crash_signature import compute_signature
 from ..models import Crash, CrashRelation, ElfFile, ProjectAuth, ProjectSlackIntegration, ProjectWebhook, db
@@ -36,90 +37,171 @@ def _upsert_relation(project_name, signature):
     )
 
 
+DEFAULT_TICK_BUDGET_SECONDS = 60
+
+
+def _tick_budget():
+    try:
+        return int(os.environ.get("DECODE_TICK_BUDGET_SECONDS",
+                                  DEFAULT_TICK_BUDGET_SECONDS))
+    except ValueError:
+        return DEFAULT_TICK_BUDGET_SECONDS
+
+
+def _decode_one(crash):
+    """Decode one crash, returning `(dump_text, module_map)` or None.
+
+    None means "leave the row alone and try again next tick". Anything
+    returned is stored, including a permanent failure's message - which is what
+    stops an undecodable artifact from being reprocessed forever, and matches
+    the in-process path's habit of storing "# esp-coredump unavailable: ...".
+    """
+    if not decode_client.configured():
+        return _decode_in_process(crash)
+
+    try:
+        result = decode_client.decode_crash(crash["crash_id"])
+    except decode_client.DecodeUnavailable as e:
+        current_app.logger.warning("  decode deferred: %s", e)
+        return None
+    except decode_client.DecodePermanent as e:
+        current_app.logger.error("  decode failed permanently: %s", e)
+        return str(e), []
+
+    decode_client.log_result(crash["crash_id"], result)
+    return result["report"], result["modules"]
+
+
+def _decode_in_process(crash):
+    """The original in-process decode, kept so the cut-over is reversible with
+    one environment variable rather than a deploy.
+
+    It needs the blobs the new crash query no longer selects, so it fetches
+    them itself - a cost paid only on this path, which goes away with it.
+    """
+    elf_images = db.session.execute(
+        select(ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
+               ElfFile.project_ver, ElfFile.elf_file)
+        .where(ElfFile.project_name == crash["project_name"],
+               ElfFile.project_ver == crash["project_ver"])
+        .order_by(ElfFile.date.desc())
+    ).mappings().all()
+    if len(elf_images) < 1:
+        current_app.logger.info("  No elf_file found")
+        return None
+    crash_dmp = db.session.execute(
+        select(Crash.crash_dmp).where(Crash.crash_id == crash["crash_id"])
+    ).scalars().first()
+
+    dump = ""
+    module_map = []
+    for elf_image in elf_images:
+        dmp = tempfile.NamedTemporaryFile(delete=False)
+        elf = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            decompressed_crash_dmp = bz2.decompress(crash_dmp)
+        except IOError:
+            decompressed_crash_dmp = crash_dmp
+        try:
+            decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
+        except IOError:
+            decompressed_elf_file = elf_image["elf_file"]
+        dmp.write(decompressed_crash_dmp); dmp.close()
+        elf.write(decompressed_elf_file); elf.close()
+
+        # Read the registry (plain gdb) and resolve module ELFs by sha1.
+        regs, loaded, base_text, core_elf, mod_status = \
+            decode._resolve_modules_for_dump(dmp.name, elf.name)
+        resolved = {m["sha1"] for m in loaded}
+        # Section addresses are recorded now, not just name/version/sha1, so
+        # the crash-zip download can emit symbol-loading commands without a
+        # debugger of its own.
+        module_map = [
+            {"name": r["name"], "version": r.get("version", ""), "sha1": r["sha1"],
+             "text": r.get("text"), "data": r.get("data"),
+             "bss": r.get("bss"), "rodata": r.get("rodata"),
+             "symbols": r["sha1"] in resolved}
+            for r in regs
+        ]
+        try:
+            for line in mod_status:
+                dump += line + "\n"
+            if loaded:
+                # Re-run esp-coredump with a literal add-symbol-file gdbinit so
+                # its full report resolves the module frames inline.
+                dump += mod_decoder.symbolicated_report(dmp.name, elf.name, loaded)
+            else:
+                dump += base_text
+        finally:
+            for m in loaded:
+                try:
+                    os.remove(m["elf"])
+                except OSError:
+                    pass
+            for path in (core_elf, dmp.name, elf.name):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return dump, module_map
+
+
 def cron():
     """Process pending crash dumps and send webhooks."""
 
-    # Fetch all crashes from database that has not been processed
+    # Metadata only - deliberately *not* crash_dmp. Decoding is now an HTTP
+    # call that can take seconds, and holding open the transaction that read a
+    # multi-megabyte blob across it would leave a connection idle-in-transaction,
+    # blocking VACUUM on the largest tables in this database. Committing right
+    # after the read also means cron stops pulling every pending crash's dump
+    # out of Postgres just to hand it to something else.
     elf_count = (
         select(func.count(ElfFile.elf_file_id))
         .where(ElfFile.project_name == Crash.project_name, ElfFile.project_ver == Crash.project_ver)
         .scalar_subquery()
     )
     crashes = db.session.execute(
-        select(Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver, Crash.crash_dmp)
+        select(Crash.crash_id, Crash.date, Crash.project_name, Crash.project_ver)
         .where(Crash.dump.is_(None), elf_count > 0)
         .order_by(Crash.crash_id.desc())
         .limit(10)
     ).mappings().all()
+    db.session.commit()
+
     if crashes:
         current_app.logger.info("Processing {} crashes".format(len(crashes)))
     processed_anything = bool(crashes)
-    for crash in crashes:
+
+    # A wall-clock budget, because the signature backfill and the AI review
+    # passes run after this loop in the same function: a backlog of slow
+    # decodes would otherwise starve them indefinitely.
+    deadline = time.monotonic() + _tick_budget()
+
+    for index, crash in enumerate(crashes):
+        if time.monotonic() > deadline:
+            current_app.logger.info(
+                "  decode budget spent; deferring {} crash(es) to the next tick".format(
+                    len(crashes) - index))
+            break
+
         current_app.logger.info("Processing crash {} project_name '{}' date '{}'".format(crash["crash_id"], crash["project_name"], crash["date"]))
 
-        # Fetch all elf image data from database that matches this project and version
-        elf_images = db.session.execute(
-            select(
-                ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
-                ElfFile.project_ver, ElfFile.elf_file,
-            )
-            .where(ElfFile.project_name == crash["project_name"], ElfFile.project_ver == crash["project_ver"])
-            .order_by(ElfFile.date.desc())
-        ).mappings().all()
-
-        dump = ""
-        if len(elf_images) < 1:
-            current_app.logger.info("  No elf_file found")
+        outcome = _decode_one(crash)
+        if outcome is None:
+            # Transient: leave dump NULL so the next tick retries. Storing
+            # anything here would mark the crash processed when the real
+            # problem was a service outage or a missing configuration.
             continue
+        dump, module_map = outcome
 
-        last_module_map = []
-        for elf_image in elf_images:
-            dmp = tempfile.NamedTemporaryFile(delete=False)
-            elf = tempfile.NamedTemporaryFile(delete=False)
-            try:
-                decompressed_crash_dmp = bz2.decompress(crash["crash_dmp"])
-            except IOError:
-                decompressed_crash_dmp = crash["crash_dmp"]
-            try:
-                decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
-            except IOError:
-                decompressed_elf_file = elf_image["elf_file"]
-            dmp.write(decompressed_crash_dmp); dmp.close()
-            elf.write(decompressed_elf_file); elf.close()
-
-            # Read the registry (plain gdb) and resolve module ELFs by sha1.
-            regs, loaded, base_text, core_elf, mod_status = \
-                decode._resolve_modules_for_dump(dmp.name, elf.name)
-            last_module_map = [{"name": r["name"], "version": r.get("version", ""), "sha1": r["sha1"]} for r in regs]
-            try:
-                for line in mod_status:
-                    dump += line + "\n"
-                if loaded:
-                    # Re-run esp-coredump with a literal add-symbol-file gdbinit so
-                    # its full report resolves the module frames inline.
-                    dump += mod_decoder.symbolicated_report(dmp.name, elf.name, loaded)
-                else:
-                    dump += base_text
-            finally:
-                for m in loaded:
-                    try:
-                        os.remove(m["elf"])
-                    except OSError:
-                        pass
-                for path in (core_elf, dmp.name, elf.name):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-
-        module_names = [m["name"] for m in last_module_map]
+        module_names = [m["name"] for m in module_map]
         signature = compute_signature(dump)
         _upsert_relation(crash["project_name"], signature)
         db.session.execute(
             update(Crash)
             .where(Crash.crash_id == crash["crash_id"])
             .values(
-                dump=dump, module_names=module_names, module_map=last_module_map,
+                dump=dump, module_names=module_names, module_map=module_map,
                 signature=signature,
             )
         )
