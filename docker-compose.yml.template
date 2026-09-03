@@ -79,14 +79,18 @@ services:
     # ELFs never touch disk and nothing survives a restart.
     tmpfs:
       - /run/gdb:size=2g,mode=0711
+    # NOTE for the reverse proxy: a WebSocket that has been upgraded is governed
+    # by HAProxy's `timeout tunnel`, which falls back to `timeout server` when
+    # unset. A short server timeout (30s is a common default) will drop an idle
+    # debug session mid-use, so set `timeout tunnel 1h` on this backend.
     environment:
       # Must match the backend's GDB_TICKET_SECRET.
       GDB_TICKET_SECRET: aaaaaaaaaaaaaaaaaaaa
       # Optional tuning: session limits and the concurrent-session cap (which
       # cannot exceed the number of gdbrun* accounts baked into the image, see
       # the Dockerfile's GDB_SESSION_SLOTS).
-      GDB_SESSION_IDLE_SECONDS: "300"
-      GDB_SESSION_MAX_SECONDS: "1800"
+      GDB_SESSION_IDLE_SECONDS: "1800"
+      GDB_SESSION_MAX_SECONDS: "14400"
       POSTGRES_HOST: postgres
       POSTGRES_USER: esp-crash
       POSTGRES_PASSWORD: xxxxx
