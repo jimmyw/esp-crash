@@ -370,8 +370,14 @@ def build_app():
         max_seconds=_env_int("GDB_SESSION_MAX_SECONDS", 1800),
     )
 
+    # Answers on "/" as well as "/health", and to HEAD and OPTIONS as well as
+    # GET, because a reverse proxy's default health check is whatever the proxy
+    # felt like: HAProxy's bare `option httpchk` sends `OPTIONS /`, and OPNsense
+    # offers `GET /`. A check that 404s marks the server DOWN and the proxy then
+    # answers "503 No server is available" - which looks nothing like a
+    # misconfigured health check, so it is worth simply passing them all.
     async def health(_request):
-        return PlainTextResponse("", status_code=200)
+        return PlainTextResponse("ok\n", status_code=200)
 
     async def info(_request):
         """Which toolchains this server can actually run. Handy when a project
@@ -388,9 +394,12 @@ def build_app():
             media_type="application/json",
         )
 
+    CHECK_METHODS = ["GET", "HEAD", "OPTIONS"]
+
     def routes_at(prefix):
         return [
-            Route(f"{prefix}/health", health),
+            Route(f"{prefix}/", health, methods=CHECK_METHODS),
+            Route(f"{prefix}/health", health, methods=CHECK_METHODS),
             Route(f"{prefix}/v1/info", info),
             WebSocketRoute(f"{prefix}/v1/session", server.session),
         ]
