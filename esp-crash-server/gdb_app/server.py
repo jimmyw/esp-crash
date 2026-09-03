@@ -21,6 +21,7 @@ including, later, a GDB/MI mode driven over the same session machinery.
 import asyncio
 import json
 import os
+import re
 import time
 
 from flask import Flask
@@ -48,6 +49,21 @@ CLOSE_TIMEOUT = 4408
 CLOSE_INTERNAL = 4500
 
 READ_CHUNK = 65536
+
+# A terminal needs a carriage return to get back to column zero; a bare newline
+# only moves down. Text that reaches the terminal channel from anywhere other
+# than the pty has therefore to be normalised, or it renders as a staircase.
+_BARE_NEWLINE = re.compile(r"\r?\n")
+
+
+def to_crlf(text):
+    """Normalise line endings for the terminal channel.
+
+    The pty already applies ONLCR, so gdb's own output arrives correctly. This
+    is for everything else we write there - converter reports and symbol
+    notes - which is ordinary Python text with bare newlines in it.
+    """
+    return _BARE_NEWLINE.sub("\r\n", text)
 
 
 def _env_int(name, default):
@@ -194,9 +210,15 @@ class SessionServer:
             await self._shut(websocket, CLOSE_INTERNAL)
             return
 
-        for line in prepared.log:
-            if line.strip():
-                await self._say(websocket, "status", line.rstrip("\n"))
+        # Preparation output (the converter's panic report, per-module symbol
+        # notes) is terminal *content*, not a lifecycle event, so it goes on the
+        # binary channel alongside gdb's output rather than through a status
+        # frame. That also puts it through to_crlf, which is what a multi-line
+        # message needs: the status path was writing embedded bare newlines
+        # straight to xterm.js and staircasing the whole report.
+        log_text = "".join(prepared.log).rstrip("\n")
+        if log_text.strip():
+            await self._echo(websocket, log_text + "\n")
 
         spec = jail.JailSpec(toolchain=toolchain, workdir=lease.workdir,
                              uid=lease.uid, gid=lease.gid, tier=jail.SESSION)
@@ -328,6 +350,13 @@ class SessionServer:
                 return "idle"
             if now - state["start"] > self.max_seconds:
                 return "max"
+
+    async def _echo(self, websocket, text):
+        """Write text to the terminal channel, with terminal line endings."""
+        try:
+            await websocket.send_bytes(to_crlf(text).encode())
+        except Exception:                                    # noqa: BLE001
+            pass
 
     async def _say(self, websocket, kind, message):
         try:

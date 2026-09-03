@@ -9,6 +9,14 @@ broken in exactly the same way a server-side fault would look.
 
 So: the URLs must stay pinned and reachable, and the page must say something
 when they are not.
+
+Also covers what reaches the terminal, for a related reason. A terminal needs a
+carriage return to return to column zero - a bare newline only moves down - so
+any text written there from outside the pty must be normalised. The converter's
+multi-line panic report was going out through a JSON status frame and being
+written raw, staircasing the whole thing. Byte-stream tests missed it because
+Python's splitlines() treats "\n" and "\r\n" alike; only a real terminal shows
+the difference.
 """
 import re
 
@@ -79,3 +87,35 @@ def test_every_external_asset_actually_resolves(urls):
         except Exception as e:                              # noqa: BLE001
             pytest.skip(f"no network access for this check: {e}")
     assert not failures, "unreachable assets:\n" + "\n".join(failures)
+
+
+# ------------------------------------------------- what reaches the terminal
+
+def test_to_crlf_normalises_bare_newlines():
+    from gdb_app.server import to_crlf
+    assert to_crlf("one\ntwo\nthree") == "one\r\ntwo\r\nthree"
+
+
+def test_to_crlf_leaves_existing_crlf_alone():
+    """Must be idempotent: gdb's own output already arrives as CRLF via the
+    pty's ONLCR, and doubling the carriage returns would be its own bug."""
+    from gdb_app.server import to_crlf
+    assert to_crlf("one\r\ntwo") == "one\r\ntwo"
+    assert to_crlf(to_crlf("one\ntwo")) == "one\r\ntwo"
+
+
+def test_to_crlf_handles_empty_and_trailing_newlines():
+    from gdb_app.server import to_crlf
+    assert to_crlf("") == ""
+    assert to_crlf("\n") == "\r\n"
+    assert to_crlf("a\n\nb") == "a\r\n\r\nb"
+
+
+def test_the_page_writes_multi_line_messages_line_by_line(page):
+    """Status and error messages can be multi-line - a refused session appends
+    the converter log to its explanation - so the client must not assume one
+    line per message."""
+    assert "function writeLines" in page
+    assert "split(/\\r?\\n/)" in page
+    # ...and nothing may write a raw message straight to the terminal.
+    assert "term.writeln('\\x1b[90m' + msg.message" not in page
