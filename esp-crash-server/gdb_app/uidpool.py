@@ -27,6 +27,7 @@ import errno
 import os
 import pwd
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 
@@ -78,13 +79,23 @@ class SessionPool:
     Bounded by construction: `capacity` is the number of pool accounts, so the
     concurrent-session limit is a property of the image rather than a config
     value that could exceed the number of identities available.
+
+    Two pools are built over *disjoint* slices of the accounts - one for
+    interactive sessions, a smaller one for batch decoding. Partitioning rather
+    than sharing with a semaphore is what actually guarantees a decode backlog
+    cannot take the last slot an interactive user is waiting for, and the
+    per-uid isolation properties still hold because the sets do not overlap.
     """
 
     def __init__(self, work_root=None, accounts=None):
         self.work_root = work_root or os.environ.get("GDB_WORK_ROOT", DEFAULT_WORK_ROOT)
         self._all = list(accounts if accounts is not None else discover_accounts())
         self._free = list(self._all)
-        self._lock = asyncio.Lock()
+        # A threading lock, not an asyncio one: leases are taken both from the
+        # event loop (interactive sessions) and from worker threads (batch
+        # decode). The critical section is a list pop with no I/O in it, so
+        # holding it briefly on the loop costs nothing.
+        self._lock = threading.Lock()
 
     @property
     def capacity(self):
@@ -94,8 +105,9 @@ class SessionPool:
     def available(self):
         return len(self._free)
 
-    async def acquire(self):
-        async with self._lock:
+    def acquire_sync(self):
+        """Take a lease. Safe from a worker thread or the event loop."""
+        with self._lock:
             if not self._free:
                 raise PoolExhausted(
                     f"all {self.capacity} debug session slots are in use")
@@ -104,9 +116,12 @@ class SessionPool:
             return self._make_lease(uid, gid)
         except BaseException:
             # Never lose an identity because directory setup failed.
-            async with self._lock:
+            with self._lock:
                 self._free.insert(0, (uid, gid))
             raise
+
+    async def acquire(self):
+        return self.acquire_sync()
 
     def _make_lease(self, uid, gid):
         session_id = uuid.uuid4().hex
@@ -119,19 +134,28 @@ class SessionPool:
         os.chmod(workdir, 0o770)
         return Lease(session_id=session_id, uid=uid, gid=gid, workdir=workdir)
 
+    def release_sync(self, lease):
+        """Remove the work directory and return the identity, blocking."""
+        try:
+            self._remove(lease.workdir)
+        finally:
+            with self._lock:
+                if (lease.uid, lease.gid) not in self._free:
+                    self._free.append((lease.uid, lease.gid))
+
     async def release(self, lease):
         """Remove the work directory and return the identity to the pool.
 
         Runs the (blocking) tree removal off the event loop: a session can
         legitimately have written hundreds of megabytes of core and ELF files,
-        and stalling every other session's I/O to delete them is not a
-        trade worth making.
+        and stalling every other session's I/O to delete them is not a trade
+        worth making.
         """
         try:
             await asyncio.get_running_loop().run_in_executor(
                 None, self._remove, lease.workdir)
         finally:
-            async with self._lock:
+            with self._lock:
                 if (lease.uid, lease.gid) not in self._free:
                     self._free.append((lease.uid, lease.gid))
 

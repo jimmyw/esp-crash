@@ -19,6 +19,8 @@ any escaping, and leaves the text channel available for structured control -
 including, later, a GDB/MI mode driven over the same session machinery.
 """
 import asyncio
+import concurrent.futures
+import hmac
 import json
 import os
 import re
@@ -26,7 +28,7 @@ import time
 
 from flask import Flask
 from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route, WebSocketRoute
 
 import gdb_tickets
@@ -35,8 +37,11 @@ from app.config import database_uri
 from app.models import db
 from mcp_app import tools
 
+from mcp_app import service_reads
+
+from . import decode as decode_mod
 from . import jail, materialize
-from .uidpool import PoolExhausted, SessionPool
+from .uidpool import PoolExhausted, SessionPool, discover_accounts
 
 # Close codes. 1000/1001 are the standard normal cases; the 4xxx range is
 # application-defined, which lets the browser tell "you are not allowed" apart
@@ -378,23 +383,91 @@ class SessionServer:
             pass
 
 
+def _decode_endpoint(flask_app, pool, executor, token):
+    """`POST /v1/decode` - produce a report for one crash, for the batch
+    pre-analysis.
+
+    Registered separately from the session routes and *not* under
+    `GDB_PATH_PREFIX`. That helper registers every route both bare and
+    prefixed, and the reverse proxy forwards the prefixed path from the public
+    internet - so putting an unscoped, all-projects crash read there would
+    publish it. This is reachable only on the internal network.
+    """
+
+    def fetch_module_elf(sha1):
+        with flask_app.app_context():
+            return tools.get_module_elf(sha1)
+
+    def run(crash_id, elf_file_id):
+        """The blocking half, on the decode executor."""
+        with flask_app.app_context():
+            artifacts = service_reads.get_decode_artifacts(crash_id, elf_file_id)
+        if artifacts is None:
+            raise decode_mod.DecodeError(
+                "not_found", f"No crash with id {crash_id}.",
+                retryable=False, status=404)
+        return decode_mod.decode(artifacts, pool, fetch_module_elf,
+                                 logger=flask_app.logger)
+
+    async def endpoint(request):
+        supplied = request.headers.get("authorization", "")
+        scheme, _, presented = supplied.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(presented, token):
+            return JSONResponse({"error": {"code": "unauthorized",
+                                           "message": "A valid service token is required.",
+                                           "retryable": False}}, status_code=401)
+        try:
+            body = await request.json()
+            crash_id = int(body["crash_id"])
+            elf_file_id = body.get("elf_file_id")
+            elf_file_id = int(elf_file_id) if elf_file_id is not None else None
+        except (ValueError, TypeError, KeyError):
+            return JSONResponse({"error": {"code": "bad_request",
+                                           "message": "Expected {\"crash_id\": <int>}.",
+                                           "retryable": False}}, status_code=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(executor, run, crash_id, elf_file_id)
+        except decode_mod.DecodeError as e:
+            headers = {"Retry-After": "10"} if e.status == 503 else None
+            return JSONResponse(e.as_dict(), status_code=e.status, headers=headers)
+        except Exception:                                    # noqa: BLE001
+            flask_app.logger.exception("decoding crash %s failed", crash_id)
+            return JSONResponse({"error": {"code": "internal",
+                                           "message": "Decoding failed unexpectedly.",
+                                           "retryable": True}}, status_code=500)
+        return JSONResponse(result)
+
+    return endpoint
+
+
 def build_app():
     flask_app = _make_db_app()
     signer = gdb_tickets.TicketSigner(
         _require_env("GDB_TICKET_SECRET"),
         ttl_seconds=_env_int("GDB_TICKET_TTL_SECONDS", gdb_tickets.DEFAULT_TTL_SECONDS),
     )
-    pool = SessionPool()
-    if not pool.capacity:
+
+    # Partition the session identities rather than sharing them. A semaphore
+    # over one pool would not do: batch work could still take the very last
+    # slot an interactive user is waiting for. Disjoint slices mean it cannot,
+    # and the per-uid isolation still holds because the sets do not overlap.
+    accounts = discover_accounts()
+    if not accounts:
         raise RuntimeError(
             "no session accounts found - the image must create gdbrun0..N users "
             "(see the Dockerfile); without them there is no per-session uid to "
             "isolate sandboxes with")
+    batch_slots = max(0, min(_env_int("GDB_BATCH_SLOTS", 4), len(accounts) - 1))
+    pool = SessionPool(accounts=accounts[:len(accounts) - batch_slots])
+    batch_pool = SessionPool(accounts=accounts[len(accounts) - batch_slots:]) \
+        if batch_slots else None
 
     server = SessionServer(
         flask_app=flask_app, signer=signer, pool=pool,
-        idle_seconds=_env_int("GDB_SESSION_IDLE_SECONDS", 300),
-        max_seconds=_env_int("GDB_SESSION_MAX_SECONDS", 1800),
+        idle_seconds=_env_int("GDB_SESSION_IDLE_SECONDS", 1800),
+        max_seconds=_env_int("GDB_SESSION_MAX_SECONDS", 14400),
     )
 
     # Answers on "/" as well as "/health", and to HEAD and OPTIONS as well as
@@ -407,19 +480,21 @@ def build_app():
         return PlainTextResponse("ok\n", status_code=200)
 
     async def info(_request):
-        """Which toolchains this server can actually run. Handy when a project
-        is configured with a name that is not installed."""
-        return PlainTextResponse(
-            json.dumps({
-                "toolchains": [
-                    {"name": t.name, "arch": t.arch, "version": t.version}
-                    for t in toolchains.installed().values()
-                ],
-                "capacity": pool.capacity,
-                "available": pool.available,
-            }),
-            media_type="application/json",
-        )
+        """Which toolchains this server can actually run, and how much capacity
+        each pool has. Handy when a project is configured with a name that is
+        not installed, or when a decode backlog is suspected."""
+        return JSONResponse({
+            "toolchains": [
+                {"name": t.name, "arch": t.arch, "version": t.version,
+                 "chip": t.chip}
+                for t in toolchains.installed().values()
+            ],
+            "capacity": pool.capacity,
+            "available": pool.available,
+            "batch_capacity": batch_pool.capacity if batch_pool else 0,
+            "batch_available": batch_pool.available if batch_pool else 0,
+            "decode": bool(os.environ.get("DECODE_SERVICE_TOKEN")),
+        })
 
     CHECK_METHODS = ["GET", "HEAD", "OPTIONS"]
 
@@ -441,4 +516,19 @@ def build_app():
     if prefix and not prefix.startswith("/"):
         prefix = "/" + prefix
 
-    return Starlette(routes=routes_at("") + (routes_at(prefix) if prefix else []))
+    routes = routes_at("") + (routes_at(prefix) if prefix else [])
+
+    # The decode endpoint exists only when a token is configured, so a
+    # deployment that has not opted in presents no surface at all. Its own
+    # executor, because the default one is shared with every interactive
+    # session's setup and teardown, and a few multi-minute decodes there would
+    # stall exactly what `_blocking` exists to protect.
+    token = os.environ.get("DECODE_SERVICE_TOKEN")
+    if token and batch_pool:
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=batch_pool.capacity, thread_name_prefix="decode")
+        routes.append(Route("/v1/decode",
+                            _decode_endpoint(flask_app, batch_pool, executor, token),
+                            methods=["POST"]))
+
+    return Starlette(routes=routes)
