@@ -94,3 +94,78 @@ def test_frame_without_address_prefix_is_still_parsed():
         "======================== THREADS INFO =========================\n"
     )
     assert compute_signature(dump) is not None
+
+
+# --- reports with no esp-coredump section headers ---------------------------
+#
+# What a vendor-neutral descriptor produces: a plain
+# `-ex "thread apply all bt full"` GDB report. Verbatim from the arm-none-eabi
+# package decoding a real EFR32 core (crash 116136), trimmed of its register
+# dump. Note that GDB prints the current frame once when it opens the core and
+# again under "Thread 1", which is exactly the repetition the fallback must not
+# fold into the signature.
+_ARM_PLAIN_REPORT = """\
+warning: found thread with pid 0, assigned replacement Target Id: process 1
+[New process 1]
+#0  0x000053ca in cli_crash (arguments=<optimized out>) at src/app_cli.c:791
+
+Thread 1 (process 1):
+#0  0x000053ca in cli_crash (arguments=<optimized out>) at src/app_cli.c:791
+        v = 0
+        type = 1 '\\001'
+#1  0x00000000 in ?? ()
+No symbol table info available.
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+"""
+
+
+def test_plain_gdb_report_without_section_headers_is_signed():
+    """Without this, a non-Espressif toolchain's crashes could never be grouped:
+    no signature means no crash_relation, so no dedup, tags or AI review."""
+    sig = compute_signature(_ARM_PLAIN_REPORT)
+    assert sig is not None
+    assert len(sig) == 64
+
+
+def test_repeated_backtrace_block_is_not_counted_twice():
+    """GDB echoes the current frame before the per-thread listing. The
+    signature must come from one backtrace block, not the concatenation."""
+    from app.crash_signature import _stack_frames
+
+    assert _stack_frames(_ARM_PLAIN_REPORT) == ["cli_crash"]
+
+
+def test_second_thread_does_not_extend_the_signature():
+    """A multi-threaded report lists every thread; only the crashing thread's
+    stack belongs in the fingerprint, matching what CURRENT THREAD STACK gives
+    on the esp-coredump path."""
+    from app.crash_signature import _stack_frames
+
+    dump = (
+        "#0  0x1 in crashing_fn (x=1) at a.c:1\n"
+        "#1  0x2 in caller_fn (y=2) at a.c:2\n"
+        "\nThread 2 (process 2):\n"
+        "#0  0x3 in idle_task (z=3) at b.c:3\n"
+        "#1  0x4 in other_fn (w=4) at b.c:4\n"
+    )
+    assert _stack_frames(dump) == ["crashing_fn", "caller_fn"]
+
+
+def test_plain_report_fallback_does_not_sign_a_decode_failure():
+    """The fallback must not turn an error message into a signature - an
+    esp-coredump traceback has no `#N name (` lines at all."""
+    assert compute_signature(
+        "espcoredump.py v1.17.1\n"
+        "Traceback (most recent call last):\n"
+        '  File "/usr/local/bin/esp-coredump", line 8, in <module>\n'
+        "    sys.exit(main())\n"
+    ) is None
+
+
+def test_plain_report_fallback_ignores_unsymbolicated_frames():
+    """`?? ()` frames carry no function name, so a stripped backtrace stays
+    unsigned rather than collapsing every such crash into one bogus group."""
+    assert compute_signature(
+        "#0  0x400d2f9a in ?? ()\n"
+        "#1  0x400d3011 in ?? ()\n"
+    ) is None

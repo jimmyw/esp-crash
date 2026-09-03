@@ -127,7 +127,11 @@ finish_package() {
   local out
   "$(dirname "$0")/verify.py" "$PKG" || die "package verification failed"
 
-  log "size    $(du -sh "$PKG" | cut -f1)"
+  # --apparent-size: on a copy-on-write filesystem (ZFS here) `du` reports the
+  # allocated blocks of a just-written tree as near zero until the transaction
+  # group commits, which made this line claim a 63KB package. The apparent
+  # size is what someone copying the package actually cares about anyway.
+  log "size    $(du -sh --apparent-size "$PKG" | cut -f1)"
   if [ "${WANT_TARBALL:-0}" = 1 ]; then
     out="$(dirname "$PKG")/$(basename "$PKG")-${PKG_VERSION}.tar.gz"
     log "tarball $out"

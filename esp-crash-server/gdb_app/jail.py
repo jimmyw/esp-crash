@@ -104,8 +104,17 @@ class JailSpec:
         path from the bind list keeps this self-maintaining - a future
         toolchain that ships libraries in an unusual place works with no
         change here.
+
+        Derivation alone is not enough for libraries *inside* a package,
+        though: the package is bound as a single directory, so no bind entry
+        has a `.so` basename and nothing under it can ever be derived. A
+        descriptor that ships its own libraries (a vendor debugger needing
+        ncurses 5, say) declares `library_path` and those entries come first,
+        so the package's own copy wins over anything the host happens to have.
         """
         dirs = {}
+        for path in getattr(self.toolchain, "library_path", ()) or ():
+            dirs[path] = None
         for path in self.all_ro_binds():
             base = os.path.basename(path)
             if ".so" in base and not os.path.isdir(path):

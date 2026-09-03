@@ -95,11 +95,15 @@ def check_placeholders(where, argv, allowed):
                      f"(known: {', '.join(sorted(allowed))})")
 
 
-def ldd_closure(exe):
+def ldd_closure(exe, env=None):
     """Every shared object `exe` needs, and a hard failure on any that is
     unresolved - an incomplete closure is a debugger that dies inside the jail
-    with 'error while loading shared libraries'."""
-    proc = subprocess.run(["ldd", exe], capture_output=True, text=True)
+    with 'error while loading shared libraries'.
+
+    `env` carries the descriptor's declared `library_path` as LD_LIBRARY_PATH,
+    so libraries the package ships for itself resolve here exactly as they will
+    in the jail. Without it a package bundling its own ncurses looks broken."""
+    proc = subprocess.run(["ldd", exe], capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         # A static binary is fine and reports "not a dynamic executable".
         if "not a dynamic executable" in (proc.stdout + proc.stderr):
@@ -140,6 +144,23 @@ def main():
     if spec.get("schema") != 1:
         fail(f"unsupported schema version: {spec.get('schema')!r}")
 
+    # --- libraries the package ships for itself. Declared rather than derived:
+    # the package is bound into the jail as one directory, so nothing inside it
+    # can be discovered from the bind list (see gdb_app/jail.py:library_path).
+    lib_dirs = []
+    for entry in (spec.get("library_path") or []):
+        expanded = entry.replace("{root}", root)
+        if not os.path.isdir(expanded):
+            fail(f"library_path entry {entry!r} is not a directory")
+        elif not os.path.realpath(expanded).startswith(root + os.sep):
+            fail(f"library_path entry {entry!r} escapes the package directory")
+        else:
+            lib_dirs.append(expanded)
+    run_env = dict(os.environ)
+    if lib_dirs:
+        run_env["LD_LIBRARY_PATH"] = ":".join(lib_dirs)
+        note(f"library_path: {', '.join(e.replace(root, '{root}') for e in lib_dirs)}")
+
     # --- the debugger must exist and run
     debugger = None
     if spec.get("debugger"):
@@ -148,7 +169,7 @@ def main():
             fail(f"debugger {spec['debugger']!r} is not an executable file")
         else:
             proc = subprocess.run([debugger, "--version"], capture_output=True,
-                                  text=True, timeout=120)
+                                  text=True, timeout=120, env=run_env)
             if proc.returncode != 0:
                 fail(f"debugger did not run: {(proc.stdout+proc.stderr).strip()[:200]}")
             else:
@@ -162,7 +183,7 @@ def main():
             fail(f"python {spec['python']!r} is not an executable file")
         else:
             proc = subprocess.run([interpreter, "-c", "import sys;print(sys.version.split()[0])"],
-                                  capture_output=True, text=True, timeout=120)
+                                  capture_output=True, text=True, timeout=120, env=run_env)
             if proc.returncode != 0:
                 fail(f"bundled interpreter did not run: {(proc.stdout+proc.stderr).strip()[:200]}")
             else:
@@ -175,14 +196,14 @@ def main():
     outside = set()
     scanned = 0
     for exe in filter(None, (debugger, interpreter)):
-        outside |= ldd_closure(exe)
+        outside |= ldd_closure(exe, run_env)
         scanned += 1
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
             if ".so" in name:
                 path = os.path.join(dirpath, name)
                 if os.path.isfile(path) and not os.path.islink(path):
-                    outside |= ldd_closure(path)
+                    outside |= ldd_closure(path, run_env)
                     scanned += 1
     outside = {p for p in outside if not p.startswith(root + os.sep)}
     note(f"library closure: {len(outside)} host libraries, from {scanned} objects")

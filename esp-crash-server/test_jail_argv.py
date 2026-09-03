@@ -138,6 +138,34 @@ def test_library_path_ignores_non_library_binds(tc):
     assert "/usr/local/lib" not in spec.library_path().split(":")
 
 
+def test_declared_library_path_is_honoured(tc):
+    """A package bound as one directory has no bind entry with a `.so`
+    basename, so nothing inside it can be derived - a descriptor that ships
+    its own libraries declares `library_path` and it must reach the jail's
+    LD_LIBRARY_PATH. The arm-none-eabi package depends on this."""
+    tc.library_path = ("/opt/tc/libexec",)
+    spec = jail.JailSpec(toolchain=tc, workdir="/w", uid=1, gid=1)
+    assert "/opt/tc/libexec" in spec.library_path().split(":")
+    assert spec.jail_env()["LD_LIBRARY_PATH"].startswith("/opt/tc/libexec")
+
+
+def test_declared_library_path_precedes_derived_directories(tc):
+    """First, so a package's own copy of a library wins over a host one of the
+    same soname - which is the point of shipping it."""
+    tc.library_path = ("/opt/tc/libexec",)
+    spec = jail.JailSpec(toolchain=tc, workdir="/w", uid=1, gid=1)
+    entries = spec.library_path().split(":")
+    assert entries[0] == "/opt/tc/libexec"
+    assert "/lib/x86_64-linux-gnu" in entries      # still derived as before
+
+
+def test_absent_library_path_changes_nothing(tc):
+    """A descriptor without the field behaves exactly as before it existed."""
+    spec = jail.JailSpec(toolchain=tc, workdir="/w", uid=1, gid=1)
+    assert spec.library_path().split(":")[0] != ""
+    assert "/lib64" in spec.library_path().split(":")
+
+
 def test_extra_binds_are_included_in_the_convert_tier(tc):
     spec = jail.JailSpec(toolchain=tc, workdir="/w", uid=1, gid=1,
                          tier=jail.CONVERT, extra_ro=("/usr/local/bin/python3.12",))
