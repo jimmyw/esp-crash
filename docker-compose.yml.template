@@ -16,6 +16,13 @@ services:
   backend:
     build: esp-crash-server
     restart: always
+    # Toolchain packages are built by esp-crash-server/toolchains/recipes/ and
+    # mounted read-only, never baked into the image. Build one with:
+    #   ./esp-crash-server/toolchains/recipes/xtensa-esp.sh --out /opt/esp-crash-toolchains
+    # The web app reads their descriptors for the settings dropdown and to
+    # decide whether to offer the Debug link, so it needs the mount too.
+    volumes:
+      - /opt/esp-crash-toolchains:/opt/toolchains:ro
     secrets:
       - db-password
     ports:
@@ -44,7 +51,17 @@ services:
   cron:
     build: esp-crash-server
     restart: always
-    command: bash -c "while sleep 10; do curl -s 'backend:8000/cron'; done"
+    command: python cron_runner.py
+    environment:
+      # Decoding happens in the sandboxed debug service; this image has neither
+      # a toolchain nor esp-coredump. Without these, cron logs an error and
+      # leaves pending crashes alone rather than storing anything.
+      DECODE_SERVICE_URL: "http://esp-crash-gdb:8002"
+      DECODE_SERVICE_TOKEN: aaaaaaaaaaaaaaaaaaaa
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: esp-crash
+      POSTGRES_PASSWORD: xxxxx
+      POSTGRES_DB: esp-crash
 
   # Sandboxed interactive gdb sessions, one bubblewrap jail per WebSocket.
   # Separate from `backend` for two reasons: gunicorn's synchronous workers
@@ -79,6 +96,8 @@ services:
     # ELFs never touch disk and nothing survives a restart.
     tmpfs:
       - /run/gdb:size=2g,mode=0711
+    volumes:
+      - /opt/esp-crash-toolchains:/opt/toolchains:ro
     # NOTE for the reverse proxy: a WebSocket that has been upgraded is governed
     # by HAProxy's `timeout tunnel`, which falls back to `timeout server` when
     # unset. A short server timeout (30s is a common default) will drop an idle
@@ -86,6 +105,13 @@ services:
     environment:
       # Must match the backend's GDB_TICKET_SECRET.
       GDB_TICKET_SECRET: aaaaaaaaaaaaaaaaaaaa
+      # Must match cron's DECODE_SERVICE_TOKEN. Grants an unscoped crash read,
+      # so it is internal-only: the /v1/decode route is deliberately not served
+      # under GDB_PATH_PREFIX and must never be routed through the proxy.
+      DECODE_SERVICE_TOKEN: aaaaaaaaaaaaaaaaaaaa
+      # Used when a project has no toolchain set, reproducing what the previous
+      # in-process decode resolved to for every project.
+      GDB_DEFAULT_TOOLCHAIN: "xtensa-esp32"
       # Optional tuning: session limits and the concurrent-session cap (which
       # cannot exceed the number of gdbrun* accounts baked into the image, see
       # the Dockerfile's GDB_SESSION_SLOTS).

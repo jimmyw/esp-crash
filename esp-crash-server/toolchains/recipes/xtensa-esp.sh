@@ -145,10 +145,17 @@ env:
   ESP_ROM_ELF_DIR: "{root}/rom-elfs/"
   IDF_PATH: "{root}/idf"
 
-# Outside the package: without locale data gdb warns "could not convert ... to
-# UTF-32" on every char array it prints.
+# Outside the package. Resolved in the runtime image and skipped when absent,
+# so listing both terminfo locations is correct - Debian puts it in
+# /lib/terminfo, most other distributions in /usr/share/terminfo.
+#   locale:   without it gdb warns "could not convert ... to UTF-32" on every
+#             char array it prints.
+#   terminfo: without it readline cannot resolve TERM and falls back to a dumb
+#             terminal, losing line editing and history in the browser console.
 binds:
   - /usr/lib/locale
+  - /lib/terminfo
+  - /usr/share/terminfo
 
 requires: [prog]
 

@@ -13,15 +13,31 @@ import toolchains
 from gdb_app import jail
 
 
+class StubToolchain:
+    """Duck-types what jail.py actually reads: an executable, an environment,
+    and a resolved read-only bind list.
+
+    A stub rather than a real Toolchain on purpose. These tests are about the
+    bwrap command line, and building a real one would drag in descriptor
+    parsing and a live `ldd` closure - making an argv assertion depend on the
+    host's library layout.
+    """
+    name, arch, version = "fake-elf", "fakearch", "1.0"
+    exe = "/opt/tc/bin/fake-gdb"
+
+    def __init__(self):
+        self.env = {"FAKE_ROM_DIR": "/opt/tc/share/data"}
+        self.ro_binds = (
+            self.exe,
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            "/lib64/ld-linux-x86-64.so.2",
+            "/opt/tc/share/data",
+        )
+
+
 @pytest.fixture
 def tc():
-    return toolchains.Toolchain(
-        name="fake-elf", arch="fakearch", version="1.0",
-        exe="/opt/tc/bin/fake-gdb", converter="passthrough",
-        libs=("/lib/x86_64-linux-gnu/libc.so.6", "/lib64/ld-linux-x86-64.so.2"),
-        extra=("/opt/tc/share/data",),
-        env={"FAKE_ROM_DIR": "/opt/tc/share/data"},
-    )
+    return StubToolchain()
 
 
 @pytest.fixture
@@ -69,7 +85,7 @@ def test_only_the_session_workdir_is_writable(spec):
 
 def test_every_toolchain_path_is_bound_read_only(spec, tc):
     ro = dict(pairs(argv_of(spec), "--ro-bind"))
-    for path in (tc.exe, *tc.libs, *tc.extra):
+    for path in tc.ro_binds:
         assert ro.get(path) == path, f"{path} not bound read-only at its own path"
 
 
@@ -122,7 +138,7 @@ def test_library_path_ignores_non_library_binds(tc):
     assert "/usr/local/lib" not in spec.library_path().split(":")
 
 
-def test_converter_binds_are_included_in_the_convert_tier(tc):
+def test_extra_binds_are_included_in_the_convert_tier(tc):
     spec = jail.JailSpec(toolchain=tc, workdir="/w", uid=1, gid=1,
                          tier=jail.CONVERT, extra_ro=("/usr/local/bin/python3.12",))
     ro = dict(pairs(argv_of(spec), "--ro-bind"))

@@ -5,7 +5,7 @@ remote tool source (`mcp_servers` + an `mcp_toolset` tool) - Claude fetches
 crash context and applies tags itself, server-side, inside one API call, via
 the service-token identity in mcp_app/auth.py. Kept out of cron.py so
 `app.ai_tagging.summarize_and_tag` is a single, stable mock target for tests,
-matching how app.decode is split out for cron's symbolication step.
+matching how app.decode_client is split out for cron's decode step.
 """
 import re
 

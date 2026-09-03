@@ -30,19 +30,20 @@ def test_cron_webhook_notification_survives_without_a_request_context(app, db_co
     calls external_url_for) must not fail when run the way cron_runner.py
     runs it - inside only an app context, no request."""
     import requests
-    from app import decode
+    from app import decode_client
     from app.routes.cron import cron
 
     monkeypatch.setitem(app.config, "EXTERNAL_URL", "https://esp-crash.example")
 
-    def fake_resolve(dump_path, prog_path):
-        import os
-        import tempfile
-        fd, core_elf = tempfile.mkstemp()
-        os.close(fd)
-        return ([], [], "base panic text\n", core_elf, [])
+    monkeypatch.setenv("DECODE_SERVICE_URL", "http://gdb.internal:8002")
+    monkeypatch.setenv("DECODE_SERVICE_TOKEN", "tok")
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", fake_resolve)
+    def fake_decode(crash_id, **kwargs):
+        return {"report": "base panic text\n", "modules": [], "module_names": [],
+                "toolchain": "xtensa-esp32", "toolchain_source": "default",
+                "elf_file_id": 1, "elf_count": 1}
+
+    monkeypatch.setattr(decode_client, "decode_crash", fake_decode)
 
     calls = []
 

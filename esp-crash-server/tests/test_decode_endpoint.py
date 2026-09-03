@@ -53,6 +53,21 @@ def seed(db_conn, *, dump=b"not-a-real-coredump", with_build=True,
                                 crash_dmp=bz2.compress(dump) if dump else None)
 
 
+@pytest.fixture
+def needs_toolchain():
+    """Skip when no toolchain package is mounted.
+
+    Reaching a `no_build` or `convert_failed` outcome means getting *past*
+    toolchain resolution, so these two need a real installed toolchain -
+    without one the endpoint correctly reports `no_toolchain` instead. Same
+    convention as the integration tests: say why rather than depend on how the
+    suite happened to be invoked.
+    """
+    import toolchains
+    if not toolchains.installed():
+        pytest.skip("no toolchain package mounted at /opt/toolchains")
+
+
 def post(client, payload, token=TOKEN):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return client.post("/v1/decode", json=payload, headers=headers)
@@ -117,7 +132,7 @@ def test_an_unknown_crash_is_a_permanent_404(build):
                                  "retryable": False}
 
 
-def test_a_crash_with_no_build_is_retryable(build, db_conn):
+def test_a_crash_with_no_build_is_retryable(build, db_conn, needs_toolchain):
     """A build may still be uploaded, so the crash must be left alone rather
     than marked undecodable."""
     crash_id = seed(db_conn, with_build=False)
@@ -127,7 +142,7 @@ def test_a_crash_with_no_build_is_retryable(build, db_conn):
     assert r.json()["error"]["retryable"] is True
 
 
-def test_an_undecodable_artifact_is_permanent(build, db_conn):
+def test_an_undecodable_artifact_is_permanent(build, db_conn, needs_toolchain):
     """Garbage will not become decodable on the next tick, and retrying it
     forever would consume the batch budget that real crashes need."""
     crash_id = seed(db_conn, dump=b"definitely not a coredump")

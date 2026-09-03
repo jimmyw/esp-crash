@@ -20,13 +20,9 @@ Kept as a top-level module (like `decode_module_coredump` and `device_url`)
 rather than inside `app/`: it is pure logic with no Flask dependency, and both
 the web app and the standalone debug service import it.
 
-During the migration this also still reads the older build-time
-`jail-manifest.json` format, so an image with baked manifests and a host with
-mounted packages both resolve. See `_load_legacy`.
 """
 import functools
 import glob
-import json
 import os
 import string
 import subprocess
@@ -34,13 +30,12 @@ from dataclasses import dataclass, field
 
 import yaml
 
-# Colon-separated roots to scan. `/opt/toolchains` is where packages are
-# mounted; `/opt/esp/tools` is only for the legacy baked manifests and goes away
-# with them.
-DEFAULT_ROOTS = "/opt/toolchains:/opt/esp/tools"
+# Where packages are mounted, colon-separated. Nothing is baked into the image
+# any more, so an empty directory here means no toolchains and no debugging -
+# which both the settings page and the service report plainly.
+DEFAULT_ROOTS = "/opt/toolchains"
 
 DESCRIPTOR_NAME = "toolchain.yml"
-LEGACY_MANIFEST_NAME = "jail-manifest.json"
 
 SCHEMA_VERSION = 1
 
@@ -98,7 +93,7 @@ class Toolchain:
     arch: str
     version: str
     exe: str
-    root: str = None                    # package dir; None for legacy manifests
+    root: str = None                    # the package directory
     python: str = None                  # the package's own interpreter, if any
     chip: str = None
     description: str = ""
@@ -110,18 +105,13 @@ class Toolchain:
     report: Phase = None
     interactive: Phase = None
     modules: Modules = None
-    # Legacy manifests only: the closure was recorded at image build time, and
-    # the conversion step was a named Python plugin.
-    libs: tuple = ()
-    extra: tuple = ()
-    converter: str = None
 
     @property
     def ro_binds(self):
         """Every host path this toolchain needs bound read-only.
 
-        For a package: the package directory itself, the declared binds, and the
-        library closure - computed here rather than recorded at build time
+        The package directory itself, the declared binds, and the library
+        closure - computed here rather than recorded at build time
         because the closure is a property of the *runtime* image. A package
         built on Arch resolves `/usr/lib/libc.so.6`; the Debian-based server
         image needs `/lib/x86_64-linux-gnu/libc.so.6`. Recording it at build
@@ -131,11 +121,6 @@ class Toolchain:
         crash-page render and needs only names and versions, so it must never
         pay for this.
         """
-        if self.root is None:
-            seen = {}
-            for p in (self.exe, *self.libs, *self.extra):
-                seen[p] = None
-            return tuple(seen)
         return _package_binds(self.root, self.exe, self.python, self.binds,
                               _tree_signature(self.root))
 
@@ -286,10 +271,6 @@ def _load_descriptor(path):
             env={**base_env, **extra_env}, binds=binds, library_path=library_path,
             requires=requires, core=core, report=report, interactive=interactive,
             modules=modules,
-            # Transition shim, removed with the converter registry in the next
-            # step: the current materialize still selects a Python plugin by
-            # name. Derive it from whether conversion is declared at all.
-            converter=("esp_coredump" if core is not None else "passthrough"),
         )
 
     variants = spec.get("variants")
@@ -304,110 +285,6 @@ def _load_descriptor(path):
         out.append(build(vid, variant.get("chip"),
                          {k: expand(v) for k, v in (variant.get("env") or {}).items()}))
     return out
-
-
-def _legacy_python_binds():
-    """The interpreter paths the retired `esp_coredump` converter bound.
-
-    Reproduced here only for legacy manifests, which have no bundled
-    interpreter and so must borrow the image's. Note the wholesale system
-    library directories: Python extension modules dlopen libraries that `ldd`
-    on the interpreter never reveals, and enumerating that tail by hand was
-    quietly wrong after every rebuild. A package bundles its own interpreter and
-    needs none of this, which is why the coarse bind disappears with the last
-    legacy manifest.
-    """
-    import sys
-    import sysconfig
-
-    paths = {sys.executable, os.path.realpath(sys.executable)}
-    for name in ("python", "python3"):
-        candidate = os.path.join(os.path.dirname(sys.executable), name)
-        if os.path.exists(candidate):
-            paths.add(candidate)
-    for key in ("stdlib", "purelib", "platlib"):
-        value = sysconfig.get_paths().get(key)
-        if value and os.path.isdir(value):
-            paths.add(os.path.realpath(value))
-    libdir, ldlibrary = (sysconfig.get_config_var("LIBDIR"),
-                         sysconfig.get_config_var("LDLIBRARY"))
-    if libdir and ldlibrary:
-        candidate = os.path.realpath(os.path.join(libdir, ldlibrary))
-        if os.path.exists(candidate):
-            paths.add(candidate)
-    multiarch = sysconfig.get_config_var("MULTIARCH") or ""
-    for candidate in ("/lib64", "/usr/lib64",
-                      f"/lib/{multiarch}" if multiarch else "",
-                      f"/usr/lib/{multiarch}" if multiarch else ""):
-        if candidate and os.path.isdir(candidate):
-            paths.add(candidate)
-    return tuple(sorted(paths))
-
-
-def _load_legacy(path):
-    """Parse an older build-time `jail-manifest.json`.
-
-    Kept only so an image with baked manifests keeps working while packages are
-    rolled out; it and the manifest generator go away together.
-
-    The manifest named a Python converter plugin instead of declaring commands.
-    Those plugins are gone, so the phases they implied are synthesised here -
-    which is also a precise statement of what they did, and makes the migration
-    checkable rather than asserted.
-    """
-    import sys
-
-    with open(path) as f:
-        data = json.load(f)
-    missing = [k for k in ("name", "arch", "version", "exe", "converter") if not data.get(k)]
-    if missing:
-        raise DescriptorError(f"{path}: manifest missing required key(s): {', '.join(missing)}")
-
-    exe, converter = data["exe"], data["converter"]
-    extra = tuple(data.get("extra", ()))
-    core = report = modules = None
-
-    if converter == "esp_coredump":
-        python = os.path.realpath(sys.executable)
-        extra = extra + _legacy_python_binds()
-        core = Phase(commands=((
-            python, "-m", "esp_coredump", "info_corefile", "-t", "raw",
-            "-c", "{dump}", "--save-core", "{core}", "--gdb", "{debugger}", "{prog}",
-        ),))
-        report = Phase(
-            commands=((
-                python, "-m", "esp_coredump", "info_corefile", "-t", "raw",
-                "-c", "{dump}", "--gdb", "{debugger}", "{prog}",
-            ),),
-            with_symbols=("--extra-gdbinit-file", "{symbols_file}"),
-        )
-        modules = Modules(
-            registry="esp_crash_modmap",
-            batch=("{debugger}", "-batch", "-nx", "{prog}", "-ex", "core-file {core}"),
-            add_symbols=modreg_default_add_symbols(),
-        )
-    elif converter != "passthrough":
-        raise DescriptorError(f"{path}: unknown converter {converter!r}")
-
-    return [Toolchain(
-        name=data["name"], arch=data["arch"], version=str(data["version"]),
-        exe=exe, converter=converter,
-        libs=tuple(data.get("libs", ())), extra=extra,
-        env=dict(data.get("env", {})),
-        requires=("prog",),
-        core=core, report=report, modules=modules,
-        interactive=Phase(
-            commands=(("{debugger}", "-nx", "-q", "{prog}", "-ex", "core-file {core}"),),
-            with_symbols=("-x", "{symbols_file}"),
-        ),
-    )]
-
-
-def modreg_default_add_symbols():
-    """Imported lazily: `gdb_app.modreg` is service-side, while this module is
-    also imported by the web app, and only the legacy path needs it."""
-    from gdb_app.modreg import DEFAULT_ADD_SYMBOLS
-    return DEFAULT_ADD_SYMBOLS
 
 
 # ------------------------------------------------------------------- discovery
@@ -425,8 +302,8 @@ def _signature(path):
 
 
 @functools.lru_cache(maxsize=64)
-def _parse(path, _signature_key, legacy):
-    return tuple(_load_legacy(path) if legacy else _load_descriptor(path))
+def _parse(path, _signature_key):
+    return tuple(_load_descriptor(path))
 
 
 def _tree_signature(root):
@@ -450,13 +327,12 @@ def discover():
     stat calls."""
     found = {}
     for root in roots():
-        for name, legacy in ((DESCRIPTOR_NAME, False), (LEGACY_MANIFEST_NAME, True)):
-            for path in sorted(glob.glob(os.path.join(root, "**", name), recursive=True)):
-                for tc in _parse(path, _signature(path), legacy):
-                    # First root wins, and a package shadows a legacy manifest
-                    # of the same name - which is what makes the migration a
-                    # matter of mounting a directory.
-                    found.setdefault(tc.name, tc)
+        for path in sorted(glob.glob(
+                os.path.join(root, "**", DESCRIPTOR_NAME), recursive=True)):
+            for tc in _parse(path, _signature(path)):
+                # First root wins, so an override root earlier in the list can
+                # shadow a mounted package of the same name.
+                found.setdefault(tc.name, tc)
     return found
 
 
@@ -550,7 +426,15 @@ def _package_binds(root, exe, python, binds, _tree_key):
     # Anything inside the package is already covered by binding the package.
     closure = {p for p in closure if not p.startswith(root + os.sep)}
 
+    # Declared binds are *runtime* paths and are skipped when absent. A
+    # descriptor cannot know the runtime image's layout: terminfo is
+    # /lib/terminfo on Debian and /usr/share/terminfo elsewhere, so a package
+    # declares both and gets whichever exists. Passing bwrap a bind source that
+    # does not exist is a hard failure, so this filter is what makes declaring
+    # alternatives safe.
+    present = [b for b in binds if os.path.exists(b)]
+
     seen = {}
-    for path in (root, *sorted(closure), *binds):
+    for path in (root, *sorted(closure), *present):
         seen[path] = None
     return tuple(seen)

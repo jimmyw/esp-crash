@@ -15,14 +15,17 @@ def test_tick_processes_a_real_pending_crash_end_to_end(app, db_conn, monkeypatc
     """No mocking of run_cron - proves _tick actually drives the real
     app.routes.cron.cron() logic against the DB, the same as the old
     `curl backend:8000/cron` path did."""
-    from app import decode
+    from app import decode_client
 
-    def fake_resolve(dump_path, prog_path):
-        fd, core_elf = tempfile.mkstemp()
-        os.close(fd)
-        return ([], [], "base panic text\n", core_elf, [])
+    monkeypatch.setenv("DECODE_SERVICE_URL", "http://gdb.internal:8002")
+    monkeypatch.setenv("DECODE_SERVICE_TOKEN", "tok")
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", fake_resolve)
+    def fake_decode(crash_id, **kwargs):
+        return {"report": "base panic text\n", "modules": [], "module_names": [],
+                "toolchain": "xtensa-esp32", "toolchain_source": "default",
+                "elf_file_id": 1, "elf_count": 1}
+
+    monkeypatch.setattr(decode_client, "decode_crash", fake_decode)
 
     device_id = helpers.create_device(db_conn, "dev-cron-runner-e2e")
     helpers.create_elf_file(db_conn, "proj-cron-runner-e2e", "1.0")

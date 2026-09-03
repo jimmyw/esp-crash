@@ -190,8 +190,17 @@ def main():
     # --- environment: a path-valued variable must be inside the package or a
     # declared bind, or the sandbox silently falls back to a default
     binds = [os.path.realpath(b) for b in (spec.get("binds") or [])]
-    for missing in (b for b in binds if not os.path.exists(b)):
-        fail(f"declared bind does not exist: {missing}")
+    absent = [b for b in binds if not os.path.exists(b)]
+    if absent:
+        # Not a failure: binds are resolved in the runtime image, which can
+        # differ from this build host. terminfo is /lib/terminfo on Debian and
+        # /usr/share/terminfo elsewhere, so declaring both is correct and one of
+        # them will always be missing here. The loader skips absent ones.
+        note(f"declared binds not present on this build host (resolved at "
+             f"runtime): {', '.join(absent)}")
+    if len(absent) == len(binds) and binds:
+        note("none of the declared binds exist here - check them against the "
+             "runtime image if the sandbox misbehaves")
 
     def env_paths_ok(env, where):
         for key, value in (env or {}).items():

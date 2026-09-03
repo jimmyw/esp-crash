@@ -31,15 +31,15 @@ def fake_toolchain(monkeypatch):
     """One installed toolchain, so settings and link-visibility logic have
     something real to resolve against without needing the actual gdb."""
     tc = toolchains.Toolchain(
-        name="xtensa-esp-elf", arch="xtensa", version="16.3",
-        exe="/opt/tc/gdb", converter="esp_coredump",
+        name="xtensa-esp32", arch="xtensa", version="16.3",
+        exe="/opt/tc/gdb", root="/opt/toolchains/xtensa-esp", chip="esp32",
     )
     monkeypatch.setattr(toolchains, "installed", lambda: {tc.name: tc})
     return tc
 
 
 def seed_crash(db_conn, user="alice", project="proj", ver="1.0",
-               with_build=True, toolchain="xtensa-esp-elf"):
+               with_build=True, toolchain="xtensa-esp32"):
     helpers.create_project(db_conn, project, github_user=user)
     device_id = helpers.create_device(db_conn, f"dev-{project}")
     if with_build:
@@ -117,17 +117,17 @@ def test_unconfigured_deployments_report_unavailable(server_module, github_clien
 def test_saving_a_toolchain(configured, fake_toolchain, github_client, db_conn):
     helpers.create_project(db_conn, "proj", github_user="alice")
     response = github_client("alice").post(
-        "/projects/proj/settings/toolchain", data={"toolchain": "xtensa-esp-elf"})
+        "/projects/proj/settings/toolchain", data={"toolchain": "xtensa-esp32"})
     assert response.status_code == 302
     with db_conn.cursor() as cur:
         cur.execute("SELECT toolchain FROM project_settings WHERE project_name='proj'")
-        assert cur.fetchone()[0] == "xtensa-esp-elf"
+        assert cur.fetchone()[0] == "xtensa-esp32"
 
 
 def test_clearing_a_toolchain(configured, fake_toolchain, github_client, db_conn):
     helpers.create_project(db_conn, "proj", github_user="alice")
     client = github_client("alice")
-    client.post("/projects/proj/settings/toolchain", data={"toolchain": "xtensa-esp-elf"})
+    client.post("/projects/proj/settings/toolchain", data={"toolchain": "xtensa-esp32"})
     client.post("/projects/proj/settings/toolchain", data={"toolchain": ""})
     with db_conn.cursor() as cur:
         cur.execute("SELECT toolchain FROM project_settings WHERE project_name='proj'")
@@ -154,17 +154,17 @@ def test_another_users_project_cannot_be_reconfigured(configured, fake_toolchain
                                                       github_client, db_conn):
     helpers.create_project(db_conn, "bobs", github_user="bob")
     response = github_client("alice").post(
-        "/projects/bobs/settings/toolchain", data={"toolchain": "xtensa-esp-elf"})
+        "/projects/bobs/settings/toolchain", data={"toolchain": "xtensa-esp32"})
     assert response.status_code == 403
 
 
 # ------------------------------------------------------ the Debug link logic
 
 @pytest.mark.parametrize("toolchain,with_build,expected", [
-    ("xtensa-esp-elf", True, True),      # everything in place
+    ("xtensa-esp32", True, True),      # everything in place
     (None, True, False),                 # no toolchain configured
     ("not-installed", True, False),      # configured, but this server lacks it
-    ("xtensa-esp-elf", False, False),    # no build, so no symbols to debug with
+    ("xtensa-esp32", False, False),    # no build, so no symbols to debug with
 ])
 def test_the_debug_link_appears_only_when_a_session_could_start(
         configured, fake_toolchain, github_client, db_conn,
@@ -211,7 +211,7 @@ def test_get_debug_artifacts_returns_normalised_blobs(configured, server_module,
     crash_id = seed_crash(db_conn)
     with server_module.app.app_context():
         artifacts = tools.get_debug_artifacts("alice", crash_id)
-    assert artifacts["toolchain"] == "xtensa-esp-elf"
+    assert artifacts["toolchain"] == "xtensa-esp32"
     # Stored bz2-compressed; the caller normalises with maybe_bunzip.
     from gdb_app.materialize import maybe_bunzip
     assert maybe_bunzip(artifacts["dump"]) == b"DUMP-BYTES"

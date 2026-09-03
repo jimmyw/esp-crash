@@ -7,6 +7,15 @@ import pytest
 import helpers
 
 
+@pytest.fixture(autouse=True)
+def _decode_service_configured(monkeypatch):
+    """Cron has no in-process decoder any more, so it declines to decode when
+    the service is not configured. These tests patch the client itself, but
+    still have to look configured for the loop to run."""
+    monkeypatch.setenv("DECODE_SERVICE_URL", "http://gdb.internal:8002")
+    monkeypatch.setenv("DECODE_SERVICE_TOKEN", "tok")
+
+
 def test_cron_no_pending_crashes(client):
     resp = client.get("/cron")
     assert resp.status_code == 200
@@ -21,16 +30,22 @@ def test_cron_ignores_crash_without_elf(client, db_conn):
     assert resp.data == b"Nothing to do\n"
 
 
-def _fake_resolve(dump_path, prog_path):
-    fd, core_elf = tempfile.mkstemp()
-    os.close(fd)
-    return ([], [], "base panic text\n", core_elf, [])
+def _result(report, modules=()):
+    """The shape POST /v1/decode returns."""
+    return {"report": report, "modules": list(modules),
+            "module_names": [m["name"] for m in modules],
+            "toolchain": "xtensa-esp32", "toolchain_source": "default",
+            "elf_file_id": 1, "elf_count": 1}
+
+
+def _fake_resolve(crash_id, **kwargs):
+    return _result("base panic text\n")
 
 
 def test_cron_processes_pending_crash(client, db_conn, monkeypatch):
-    from app import decode
+    from app import decode_client
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
 
     device_id = helpers.create_device(db_conn, "dev-cron-2")
     helpers.create_elf_file(db_conn, "proj-cron-ok", "1.0")
@@ -54,16 +69,14 @@ _STACK_TEXT = (
 )
 
 
-def _fake_resolve_with_stack(dump_path, prog_path):
-    fd, core_elf = tempfile.mkstemp()
-    os.close(fd)
-    return ([], [], _STACK_TEXT, core_elf, [])
+def _fake_resolve_with_stack(crash_id, **kwargs):
+    return _result(_STACK_TEXT)
 
 
 def test_cron_computes_signature_on_symbolication(client, db_conn, monkeypatch):
-    from app import decode
+    from app import decode_client
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve_with_stack)
 
     device_id = helpers.create_device(db_conn, "dev-cron-sig")
     helpers.create_elf_file(db_conn, "proj-cron-sig", "1.0")
@@ -83,9 +96,9 @@ def test_cron_creates_relation_when_signature_first_assigned(client, db_conn, mo
     """crash.signature has an FK to crash_relation - the relation row must
     exist before (or in the same transaction as) the crash is given that
     signature."""
-    from app import decode
+    from app import decode_client
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve_with_stack)
 
     device_id = helpers.create_device(db_conn, "dev-cron-sig-relation")
     helpers.create_elf_file(db_conn, "proj-cron-sig-relation", "1.0")
@@ -106,13 +119,13 @@ def test_cron_creates_relation_when_signature_first_assigned(client, db_conn, mo
 
 
 def test_cron_backfills_signature_for_already_symbolicated_crashes(client, db_conn, monkeypatch):
-    from app import decode
+    from app import decode_client
 
     # Backfill must not re-run symbolication - if it did, this would blow up.
     def _fail(*a, **k):
         raise AssertionError("backfill should not re-symbolicate")
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fail)
+    monkeypatch.setattr(decode_client, "decode_crash", _fail)
 
     device_id = helpers.create_device(db_conn, "dev-cron-sig-backfill")
     crash_id = helpers.create_crash(
@@ -143,9 +156,9 @@ def test_cron_backfill_leaves_unparseable_dump_signature_null(client, db_conn):
 
 def test_cron_sends_webhook(client, db_conn, monkeypatch):
     import requests
-    from app import decode
+    from app import decode_client
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
 
     calls = []
 
@@ -173,9 +186,9 @@ def test_cron_sends_webhook(client, db_conn, monkeypatch):
 
 def test_cron_sends_slack_notification(client, db_conn, monkeypatch):
     import slack_sdk
-    from app import decode
+    from app import decode_client
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
 
     posted = []
 
@@ -211,14 +224,14 @@ def _configure_ai(app):
 
 
 def test_cron_ai_summary_scoped_to_granted_projects(client, db_conn, monkeypatch, app):
-    from app import decode
+    from app import decode_client
     from app.routes import cron
 
     # AI-review selection now requires a signature - use the fake resolver
     # that produces a parseable stack, so cron's own symbolication pass
     # (which runs before the AI pass, same request) computes one and
     # creates the crash_relation row for it.
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve_with_stack)
     calls = []
     monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append((crash_id, project_name)))
     _configure_ai(app)
@@ -243,10 +256,10 @@ def test_cron_ai_summary_includes_pre_grant_backlog(client, db_conn, monkeypatch
     (project_name, signature) group rather than per crash, granting access
     only means reviewing a project's handful of distinct relations, not
     backfilling every historical crash."""
-    from app import decode
+    from app import decode_client
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
     calls = []
     monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append(crash_id))
 
@@ -276,10 +289,10 @@ def test_cron_ai_summary_includes_pre_grant_backlog(client, db_conn, monkeypatch
 
 
 def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, app):
-    from app import decode
+    from app import decode_client
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
     calls = []
     monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append(crash_id))
     _configure_ai(app)
@@ -299,10 +312,10 @@ def test_cron_ai_summary_skips_already_summarized(client, db_conn, monkeypatch, 
 
 
 def test_cron_ai_summary_failure_is_logged_and_skipped(client, db_conn, monkeypatch, app):
-    from app import decode
+    from app import decode_client
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve_with_stack)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve_with_stack)
 
     def failing_summarize(crash_id, project_name):
         raise RuntimeError("boom")
@@ -331,10 +344,10 @@ def test_cron_ai_summary_requires_full_config(client, db_conn, monkeypatch, app)
     """MCP_SERVICE_GITHUB_USER alone isn't enough - a partially configured
     deployment (e.g. ANTHROPIC_API_KEY not yet set) must not call the AI
     step at all, let alone crash or spin retrying a doomed call."""
-    from app import decode
+    from app import decode_client
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
     calls = []
     monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append(crash_id))
 
@@ -358,10 +371,10 @@ def test_cron_ai_summary_no_op_when_entirely_unconfigured(client, db_conn, monke
     """The default, out-of-the-box state (nobody has set any of the four AI
     env vars): cron must behave exactly as it did before this feature -
     normal symbolication, no AI calls, no errors."""
-    from app import decode
+    from app import decode_client
     from app.routes import cron
 
-    monkeypatch.setattr(decode, "_resolve_modules_for_dump", _fake_resolve)
+    monkeypatch.setattr(decode_client, "decode_crash", _fake_resolve)
     calls = []
     monkeypatch.setattr(cron, "summarize_and_tag", lambda crash_id, project_name: calls.append(crash_id))
 

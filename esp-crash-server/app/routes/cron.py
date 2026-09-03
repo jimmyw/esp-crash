@@ -5,8 +5,6 @@ via Flask Blueprint - see core.py for why). Deliberately un-authenticated
 and polled via HTTP by a sidecar container (see docker-compose.yml `cron`
 service) rather than a real cron/celery job - kept as-is for this phase."""
 import os
-import bz2
-import tempfile
 import time
 
 import requests
@@ -16,8 +14,7 @@ from slack_sdk.errors import SlackApiError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-import decode_module_coredump as mod_decoder
-from .. import decode, decode_client
+from .. import decode_client
 from ..ai_tagging import summarize_and_tag
 from ..crash_signature import compute_signature
 from ..models import Crash, CrashRelation, ElfFile, ProjectAuth, ProjectSlackIntegration, ProjectWebhook, db
@@ -54,11 +51,8 @@ def _decode_one(crash):
     None means "leave the row alone and try again next tick". Anything
     returned is stored, including a permanent failure's message - which is what
     stops an undecodable artifact from being reprocessed forever, and matches
-    the in-process path's habit of storing "# esp-coredump unavailable: ...".
+    the old in-process path's habit of storing "# esp-coredump unavailable".
     """
-    if not decode_client.configured():
-        return _decode_in_process(crash)
-
     try:
         result = decode_client.decode_crash(crash["crash_id"])
     except decode_client.DecodeUnavailable as e:
@@ -70,80 +64,6 @@ def _decode_one(crash):
 
     decode_client.log_result(crash["crash_id"], result)
     return result["report"], result["modules"]
-
-
-def _decode_in_process(crash):
-    """The original in-process decode, kept so the cut-over is reversible with
-    one environment variable rather than a deploy.
-
-    It needs the blobs the new crash query no longer selects, so it fetches
-    them itself - a cost paid only on this path, which goes away with it.
-    """
-    elf_images = db.session.execute(
-        select(ElfFile.elf_file_id, ElfFile.date, ElfFile.project_name,
-               ElfFile.project_ver, ElfFile.elf_file)
-        .where(ElfFile.project_name == crash["project_name"],
-               ElfFile.project_ver == crash["project_ver"])
-        .order_by(ElfFile.date.desc())
-    ).mappings().all()
-    if len(elf_images) < 1:
-        current_app.logger.info("  No elf_file found")
-        return None
-    crash_dmp = db.session.execute(
-        select(Crash.crash_dmp).where(Crash.crash_id == crash["crash_id"])
-    ).scalars().first()
-
-    dump = ""
-    module_map = []
-    for elf_image in elf_images:
-        dmp = tempfile.NamedTemporaryFile(delete=False)
-        elf = tempfile.NamedTemporaryFile(delete=False)
-        try:
-            decompressed_crash_dmp = bz2.decompress(crash_dmp)
-        except IOError:
-            decompressed_crash_dmp = crash_dmp
-        try:
-            decompressed_elf_file = bz2.decompress(elf_image["elf_file"])
-        except IOError:
-            decompressed_elf_file = elf_image["elf_file"]
-        dmp.write(decompressed_crash_dmp); dmp.close()
-        elf.write(decompressed_elf_file); elf.close()
-
-        # Read the registry (plain gdb) and resolve module ELFs by sha1.
-        regs, loaded, base_text, core_elf, mod_status = \
-            decode._resolve_modules_for_dump(dmp.name, elf.name)
-        resolved = {m["sha1"] for m in loaded}
-        # Section addresses are recorded now, not just name/version/sha1, so
-        # the crash-zip download can emit symbol-loading commands without a
-        # debugger of its own.
-        module_map = [
-            {"name": r["name"], "version": r.get("version", ""), "sha1": r["sha1"],
-             "text": r.get("text"), "data": r.get("data"),
-             "bss": r.get("bss"), "rodata": r.get("rodata"),
-             "symbols": r["sha1"] in resolved}
-            for r in regs
-        ]
-        try:
-            for line in mod_status:
-                dump += line + "\n"
-            if loaded:
-                # Re-run esp-coredump with a literal add-symbol-file gdbinit so
-                # its full report resolves the module frames inline.
-                dump += mod_decoder.symbolicated_report(dmp.name, elf.name, loaded)
-            else:
-                dump += base_text
-        finally:
-            for m in loaded:
-                try:
-                    os.remove(m["elf"])
-                except OSError:
-                    pass
-            for path in (core_elf, dmp.name, elf.name):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-    return dump, module_map
 
 
 def cron():
@@ -167,6 +87,16 @@ def cron():
         .limit(10)
     ).mappings().all()
     db.session.commit()
+
+    if crashes and not decode_client.configured():
+        # There is no in-process decoder any more: this image ships neither a
+        # toolchain nor esp-coredump. Say so once per tick rather than logging a
+        # per-crash warning, and leave every row untouched.
+        current_app.logger.error(
+            "DECODE_SERVICE_URL is not set, so %s pending crash(es) cannot be "
+            "decoded - decoding now happens in the esp-crash-gdb service",
+            len(crashes))
+        crashes = []
 
     if crashes:
         current_app.logger.info("Processing {} crashes".format(len(crashes)))
