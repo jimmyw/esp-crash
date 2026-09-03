@@ -6,6 +6,7 @@ and polled via HTTP by a sidecar container (see docker-compose.yml `cron`
 service) rather than a real cron/celery job - kept as-is for this phase."""
 import os
 import time
+from datetime import datetime, timezone
 
 import requests
 import slack_sdk
@@ -133,6 +134,7 @@ def cron():
             .values(
                 dump=dump, module_names=module_names, module_map=module_map,
                 signature=signature,
+                signature_attempted_at=datetime.now(timezone.utc),
             )
         )
         db.session.commit()
@@ -293,30 +295,45 @@ def cron():
         else:
             current_app.logger.info(f"No Slack integrations found for project {project_name}")
 
-    # Non-AI duplicate-signature backfill: crashes that already have a dump
-    # but predate this feature (or whose earlier signature attempt found no
-    # parseable backtrace, e.g. a decode-failure dump - those legitimately
-    # stay NULL and get harmlessly re-checked each tick). Pure local
-    # computation, no external calls - unlike the AI step below there's no
-    # cost or backlog-explosion concern, so a generous batch size just runs
-    # the backlog down over a handful of ticks.
+    # Non-AI duplicate-signature backfill: crashes that have a dump but no
+    # signature and have never been attempted. The attempt is stamped whether
+    # or not it produced a signature, which is what makes this pass
+    # terminate: a dump with no parseable backtrace (a decode-failure dump,
+    # say) yields NULL every time, so with only `signature IS NULL` to go on
+    # it was re-selected every tick forever - and since the ordering is
+    # `crash_id DESC`, those unparseable rows sat permanently at the head of
+    # the queue and starved the entire backlog behind them. Measured before
+    # the fix: 0 of the newest 500 could yield a signature while ~90% of the
+    # 45k rows behind them could, and the backlog did not move at all.
+    #
+    # Pure local computation, no external calls - unlike the AI step below
+    # there's no cost or backlog-explosion concern, so a generous batch size
+    # just runs the backlog down over a handful of ticks.
     backfill_targets = db.session.execute(
         select(Crash.crash_id, Crash.project_name, Crash.dump)
-        .where(Crash.dump.is_not(None), Crash.signature.is_(None))
+        .where(Crash.dump.is_not(None), Crash.signature.is_(None),
+               Crash.signature_attempted_at.is_(None))
         .order_by(Crash.crash_id.desc())
         .limit(500)
     ).mappings().all()
     if backfill_targets:
         processed_anything = True
+        attempted_at = datetime.now(timezone.utc)
+        signed = 0
         for row in backfill_targets:
             signature = compute_signature(row["dump"])
+            if signature:
+                signed += 1
             _upsert_relation(row["project_name"], signature)
             db.session.execute(
                 update(Crash).where(Crash.crash_id == row["crash_id"])
-                .values(signature=signature)
+                .values(signature=signature, signature_attempted_at=attempted_at)
             )
         db.session.commit()
-        current_app.logger.info(f"Backfilled signature for {len(backfill_targets)} crashes")
+        current_app.logger.info(
+            "Signature backfill: {} of {} crashes got a signature "
+            "(the rest have no parseable backtrace)".format(
+                signed, len(backfill_targets)))
 
     # AI summary + tagging: a second, independent pass with its own retry
     # gate (ai_summary IS NULL), scoped to projects that have explicitly

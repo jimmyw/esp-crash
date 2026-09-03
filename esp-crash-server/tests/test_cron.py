@@ -154,6 +154,57 @@ def test_cron_backfill_leaves_unparseable_dump_signature_null(client, db_conn):
         assert cur.fetchone()[0] is None
 
 
+def test_cron_backfill_attempts_an_unparseable_dump_only_once(client, db_conn):
+    """The backfill must terminate. A dump with no parseable backtrace yields
+    NULL every time, so it has to be marked as attempted - otherwise it is
+    re-selected on every tick forever, and because the query is ordered
+    `crash_id DESC` the newest such rows permanently starve the backlog
+    behind them (the bug this column was added to fix)."""
+    device_id = helpers.create_device(db_conn, "dev-cron-sig-attempt-once")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-cron-sig-attempt-once", "1.0", device_id,
+        dump="Failed to load core dump.",
+    )
+
+    assert client.get("/cron").status_code == 200
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT signature, signature_attempted_at FROM crash WHERE crash_id = %s",
+            (crash_id,))
+        signature, first_attempt = cur.fetchone()
+    assert signature is None
+    assert first_attempt is not None, "an attempt that found nothing must still be stamped"
+
+    # A second tick must not pick the row up again: same timestamp means it
+    # was never re-selected, let alone re-written.
+    assert client.get("/cron").status_code == 200
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT signature_attempted_at FROM crash WHERE crash_id = %s", (crash_id,))
+        assert cur.fetchone()[0] == first_attempt
+
+
+def test_cron_backfill_stamps_the_attempt_when_it_succeeds(client, db_conn, monkeypatch):
+    from app import decode_client
+
+    monkeypatch.setattr(decode_client, "decode_crash",
+                        lambda *a, **k: pytest.fail("backfill should not re-symbolicate"))
+
+    device_id = helpers.create_device(db_conn, "dev-cron-sig-stamp")
+    crash_id = helpers.create_crash(
+        db_conn, "proj-cron-sig-stamp", "1.0", device_id, dump=_STACK_TEXT,
+    )
+
+    assert client.get("/cron").status_code == 200
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT signature, signature_attempted_at FROM crash WHERE crash_id = %s",
+            (crash_id,))
+        signature, attempted = cur.fetchone()
+    assert signature is not None
+    assert attempted is not None
+
+
 def test_cron_sends_webhook(client, db_conn, monkeypatch):
     import requests
     from app import decode_client
