@@ -457,9 +457,15 @@ directory — no rebuild, no redeploy.
 # build one (downloads and verifies everything, ~112 MB for Espressif)
 ./esp-crash-server/toolchains/recipes/xtensa-esp.sh --out /opt/esp-crash-toolchains
 
+# ARM/EFR32: 33 MB, just a debugger and its libraries
+./esp-crash-server/toolchains/recipes/arm-none-eabi.sh --out /opt/esp-crash-toolchains
+
 # or produce a versioned tarball to copy to another machine
 ./esp-crash-server/toolchains/recipes/xtensa-esp.sh --out ./dist --tarball
 ```
+
+A package is picked up the moment it appears — `installed()` re-globs per call,
+so no restart is needed to add an architecture.
 
 Then mount it read-only at `/opt/toolchains` on `backend`, `backend-dev` and
 `esp-crash-gdb` (see `docker-compose.yml.template`). The web app reads the
@@ -486,6 +492,7 @@ python: python/bin/python3          # optional; referenced as {python}
 env:
   ESP_ROM_ELF_DIR: "{root}/rom-elfs/"
 binds: [/usr/lib/locale, /lib/terminfo, /usr/share/terminfo]
+library_path: []                    # optional; see below
 requires: [prog]
 
 core:                               # raw artifact -> a file the debugger opens
@@ -530,25 +537,45 @@ commands to execute. Mount it read-only, own it as root, and never let the
 Most of the work is *omission*. A target whose crash artifact is already an ELF
 core needs no `core` phase; one with no runtime module registry needs no
 `modules` section; one whose report comes from the debugger itself needs no
-interpreter. That is the whole ARM descriptor:
+interpreter. That is the whole ARM descriptor, as shipped:
 
 ```yaml
 schema: 1
 name: arm-none-eabi
 arch: arm
-version: "10.2_2020q4"
+version: "15.2.1-1.1"
 debugger: bin/arm-none-eabi-gdb
-binds: [/usr/lib/locale, /lib/terminfo]
+library_path: ["{root}/libexec"]    # the debugger's own bundled libraries
+binds: [/usr/lib/locale, /lib/terminfo, /usr/share/terminfo]
 requires: [prog]
 
 report:
+  timeout: 120
   commands:
     - ["{debugger}", -batch, -nx, "{prog}", -ex, "core-file {core}",
-       -ex, "thread apply all bt full"]
+       -ex, "thread apply all bt full", -ex, "info registers"]
 
 interactive:
   command: ["{debugger}", -nx, -q, "{prog}", -ex, "core-file {core}"]
 ```
+
+`library_path` is how a package points at libraries it ships for itself. It is
+needed because the package is bound into the jail as a *single directory*, so
+nothing inside it can be derived from the bind list the way an external library
+is — and the jail has no `ld.so.cache` to fall back on. Entries come first in
+`LD_LIBRARY_PATH`, so a package's own copy wins over anything the host has.
+
+**Pick the debugger by capability, not by what is already on disk.** Reading a
+bare-metal ARM core needs GDB's `arm-none-tdep` support, which arrived in
+**GDB 11**. Without it GDB rejects the file outright — `"core.elf": Core file
+format not supported` — because a bare-metal build has no GNU/Linux OSABI
+handler to interpret `NT_PRSTATUS`, and its whole OSABI list is `auto, default,
+none, PikeOS`. Measured on a real EFR32 core: Silicon Labs' Simplicity Studio
+drop (GDB 10.1.90) cannot read it at all, while the xPack build (GDB 16.3)
+produces a fully symbolicated backtrace with locals from the same bytes. The
+core was valid the whole time — a well-formed `ET_CORE`/`EM_ARM` ELF with a
+148-byte `NT_PRSTATUS` note — which is why this presents as a debugger problem
+wearing a corrupt-file costume.
 
 Add a recipe beside `xtensa-esp.sh` to assemble the package, and
 `toolchains/recipes/verify.py` will check it: required keys, a debugger that
