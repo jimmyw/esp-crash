@@ -25,6 +25,17 @@ class Crash(db.Model):
         db.Index("textsearch_idx", "textsearch", postgresql_using="gin"),
         db.Index("idx_crash_project_name_ver", "project_name", "project_ver"),
         db.Index("idx_crash_signature", "signature"),
+        # Backfill work-queue index: covers exactly the rows the signature
+        # backfill in app/routes/cron.py selects, so the query stays cheap
+        # and the index shrinks to nothing once the backlog is drained.
+        db.Index(
+            "idx_crash_signature_pending",
+            "crash_id",
+            postgresql_where=db.text(
+                "dump IS NOT NULL AND signature IS NULL "
+                "AND signature_attempted_at IS NULL"
+            ),
+        ),
     )
 
     crash_id = db.Column(db.Integer, primary_key=True)
@@ -46,6 +57,13 @@ class Crash(db.Model):
     # crash with signature IS NULL has no relation and so can't have
     # either.
     signature = db.Column(db.Text)
+    # When the signature was last computed for this crash's current dump -
+    # stamped on every attempt, whether or not one was produced. This is what
+    # makes the backfill terminate: a dump with no parseable backtrace yields
+    # NULL forever, so without an "already tried" marker those rows are
+    # re-selected every tick and (being the newest) starve the whole backlog
+    # behind them. Cleared implicitly by a re-decode, which re-stamps it.
+    signature_attempted_at = db.Column(db.TIMESTAMP(timezone=True))
 
 
 class ElfFile(db.Model):
