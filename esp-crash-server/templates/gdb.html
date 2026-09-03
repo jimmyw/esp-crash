@@ -13,9 +13,14 @@
                    {"t": "resize"} out
 #}
 
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm-addon-fit/0.8.0/xterm-addon-fit.min.js"></script>
+{# jsdelivr rather than the cdnjs used elsewhere in this app: cdnjs carries only
+   xterm's core (and no minified JS), while the fit addon is not on cdnjs at
+   all - the official @xterm/* npm packages are. Versions are pinned: an
+   unpinned or wrong URL 404s, and a missing script here used to take the whole
+   page down silently, which is why the guard below exists. #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
 
 <div class="flex items-baseline justify-between mb-2">
     <h1 class="text-3xl font-bold">Debug crash {{ crash_id }}</h1>
@@ -41,6 +46,19 @@
 (function () {
     const CRASH_ID = {{ crash_id | tojson }};
 
+    // Fail visibly, not silently. A 404 on either script above leaves its
+    // global undefined, and the first use then throws and aborts this whole
+    // function - so the page would render an empty black box with a
+    // "connecting..." label forever and nothing in the terminal to explain it.
+    if (typeof Terminal === "undefined") {
+        document.getElementById("term").innerHTML =
+            '<p class="p-4 text-red-400 font-mono text-sm">' +
+            'The terminal library (xterm.js) could not be loaded. ' +
+            'Check the browser console and network access to cdn.jsdelivr.net.</p>';
+        document.getElementById("state").textContent = "terminal library unavailable";
+        return;
+    }
+
     const term = new Terminal({
         cursorBlink: true,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -50,10 +68,16 @@
         // full thread dump.
         scrollback: 10000,
     });
-    const fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
+    // The fit addon is a convenience, not a requirement: without it the
+    // terminal keeps its default 80x24 and everything else still works, so a
+    // failure to load it must not cost the whole session.
+    let fit = null;
+    if (typeof FitAddon !== "undefined" && FitAddon.FitAddon) {
+        fit = new FitAddon.FitAddon();
+        term.loadAddon(fit);
+    }
     term.open(document.getElementById('term'));
-    fit.fit();
+    if (fit) { fit.fit(); }
 
     const dot = document.getElementById('dot');
     const stateText = document.getElementById('state');
@@ -155,7 +179,7 @@
     let resizeTimer = null;
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => { fit.fit(); sendResize(); }, 120);
+        resizeTimer = setTimeout(() => { if (fit) { fit.fit(); } sendResize(); }, 120);
     });
 
     reconnectBtn.addEventListener('click', () => { term.reset(); connect(); });
