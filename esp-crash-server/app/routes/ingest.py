@@ -94,13 +94,15 @@ def dump():
     db.session.commit()
 
     # Hand back a link to what was just stored, so whatever uploaded it can
-    # log or forward somewhere to look. The short form keeps the project name
-    # out of it - the uploader knows the id and nothing else, and
-    # /c/<id> resolves the rest (see app/routes/crashes.py:short_crash).
+    # log or forward somewhere to look. `/crash/<id>` rather than a
+    # project-scoped URL because of what the uploader knows: the crash id and
+    # nothing else. That route infers the project (see
+    # app/routes/crashes.py:show_crash) and is scoped like every other page, so
+    # an id alone never reveals which project it belongs to.
     #
-    # The body keeps its "OK" prefix: devices in the field predate this and
-    # some may check it, so the link is appended rather than replacing it.
-    return f"OK {external_url_for('short_crash', crash_id=crash_id)}\n", 200
+    # The body is the URL and nothing else - the 200 already says it worked, so
+    # a status word in front of it would only be something to strip.
+    return f"{external_url_for('show_crash', crash_id=crash_id)}\n", 200
 
 
 def upload_elf():
