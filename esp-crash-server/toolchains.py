@@ -44,6 +44,10 @@ SCHEMA_VERSION = 1
 # that reaches a command line and fails somewhere far away.
 PLACEHOLDERS = frozenset({
     "root", "debugger", "python", "dump", "prog", "core", "symbols_file", "work",
+    # The variant's declared chip, for a toolchain whose extra symbol sources
+    # are per-chip (Espressif's ROM ELFs). Empty when the descriptor declares
+    # no chip, so a command using it is only meaningful where one is set.
+    "chip",
 })
 # Additionally allowed inside `modules.add_symbols`, where the values come from
 # the on-device module registry.
@@ -104,6 +108,10 @@ class Toolchain:
     core: Phase = None
     report: Phase = None
     interactive: Phase = None
+    # Optional. Commands whose stdout is debugger script, loaded alongside any
+    # module symbols - for symbol sources that are neither the build ELF nor a
+    # runtime-loaded module, such as a chip's ROM.
+    symbols: Phase = None
     modules: Modules = None
 
     @property
@@ -239,6 +247,7 @@ def _load_descriptor(path):
 
     core = _phase(spec, "core", allowed, where)
     report = _phase(spec, "report", allowed, where)
+    symbols = _phase(spec, "symbols", allowed, where)
     interactive = _phase(spec, "interactive", allowed, where, single=True)
     if interactive is None:
         raise DescriptorError(
@@ -270,7 +279,7 @@ def _load_descriptor(path):
             python=python, chip=chip, description=(spec.get("description") or "").strip(),
             env={**base_env, **extra_env}, binds=binds, library_path=library_path,
             requires=requires, core=core, report=report, interactive=interactive,
-            modules=modules,
+            symbols=symbols, modules=modules,
         )
 
     variants = spec.get("variants")

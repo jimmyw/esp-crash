@@ -149,18 +149,33 @@ def prepare(artifacts, toolchain, lease, get_module_elf):
         "python": toolchain.python or "",
         "dump": DUMP, "prog": PROG, "core": CORE,
         "symbols_file": SYMBOLS_FILE, "work": jail.WORK,
+        "chip": toolchain.chip or "",
     }
 
     convert = _spec(toolchain, work, lease, jail.CONVERT)
     convert_log = _make_core(toolchain, subst, convert, work, lease)
 
-    modules, notes = _load_modules(toolchain, subst, work, lease, get_module_elf)
+    # Extra symbol sources first: they are derived from the core, and unlike
+    # module symbols they need no registry read.
+    extra_symbols, extra_notes = _extra_symbols(toolchain, subst, convert)
 
-    report = _make_report(toolchain, subst, convert, convert_log, modules)
+    modules, notes, module_symbols = _load_modules(
+        toolchain, subst, work, lease, get_module_elf)
 
+    commands = list(extra_symbols) + list(module_symbols)
+    if commands:
+        _write(work, SYMBOLS_FILE, ("\n".join(commands) + "\n").encode(), lease.gid)
+
+    report = _make_report(toolchain, subst, convert, convert_log, modules,
+                          with_symbols=bool(commands))
+
+    # Gated on the file having content rather than on modules alone: a
+    # toolchain can contribute symbols with no runtime modules in play at all,
+    # which is the usual case for a chip ROM.
     argv = toolchain.render(toolchain.interactive, subst,
-                            with_symbols=bool(modules))[0]
-    return Prepared(argv, convert_log=convert_log, module_notes=notes,
+                            with_symbols=bool(commands))[0]
+    return Prepared(argv, convert_log=convert_log,
+                    module_notes=extra_notes + notes,
                     report=report, modules=modules)
 
 
@@ -195,7 +210,7 @@ def _make_core(toolchain, subst, convert, work, lease):
     return log
 
 
-def _make_report(toolchain, subst, convert, convert_log, modules):
+def _make_report(toolchain, subst, convert, convert_log, modules, with_symbols=False):
     """Produce the human-readable report.
 
     A second pass can only do something the conversion pass could not: resolve
@@ -215,10 +230,40 @@ def _make_report(toolchain, subst, convert, convert_log, modules):
         return convert_log
 
     report = ""
-    for argv in toolchain.render(toolchain.report, subst, with_symbols=bool(modules)):
+    for argv in toolchain.render(toolchain.report, subst, with_symbols=with_symbols):
         result = jail.run_batch(convert, argv, timeout=toolchain.report.timeout)
         report += (result.stdout or b"").decode("utf-8", "replace")
     return report
+
+
+def _extra_symbols(toolchain, subst, convert):
+    """Debugger commands for symbol sources that are neither the build ELF nor
+    a runtime-loaded module - a chip's ROM being the case that prompted this.
+
+    The declared commands print debugger script on stdout and we collect it
+    verbatim. Which ROM image applies depends on the chip revision recorded in
+    the core, so this cannot be a static path in the descriptor; running a
+    command the package ships keeps that knowledge with the toolchain that has
+    it instead of in this module.
+
+    Best-effort, exactly like module symbols: a failure costs some frames their
+    names, which is not a reason to refuse a session.
+    """
+    if toolchain.symbols is None:
+        return (), ()
+
+    commands, notes = [], []
+    for argv in toolchain.render(toolchain.symbols, subst):
+        try:
+            result = jail.run_batch(convert, argv, timeout=toolchain.symbols.timeout)
+        except Exception as e:                   # noqa: BLE001
+            notes.append(f"# extra symbols: {e}\n")
+            continue
+        out = (result.stdout or b"").decode("utf-8", "replace")
+        commands += [line for line in (l.strip() for l in out.splitlines()) if line]
+    if commands:
+        notes.append(f"# extra symbol sources loaded: {len(commands)}\n")
+    return tuple(commands), tuple(notes)
 
 
 def _load_modules(toolchain, subst, work, lease, get_module_elf):
@@ -233,10 +278,10 @@ def _load_modules(toolchain, subst, work, lease, get_module_elf):
     """
     spec = toolchain.modules
     if spec is None:
-        return [], ()
+        return [], (), ()
     if spec.registry not in REGISTRY_PROTOCOLS:
         return [], (f"# unknown module registry protocol {spec.registry!r}; "
-                    f"module symbols not resolved\n",)
+                    f"module symbols not resolved\n",), ()
 
     session = _spec(toolchain, work, lease, jail.SESSION)
     batch = [a.format(**subst) for a in spec.batch]
@@ -251,7 +296,7 @@ def _load_modules(toolchain, subst, work, lease, get_module_elf):
     try:
         registry = modreg.read_registry(runner)
     except Exception as e:                       # noqa: BLE001
-        return [], (f"# could not read the module registry: {e}\n",)
+        return [], (f"# could not read the module registry: {e}\n",), ()
 
     module_dir = os.path.join(work, MODULE_DIR)
     os.makedirs(module_dir, mode=0o750, exist_ok=True)
@@ -270,9 +315,11 @@ def _load_modules(toolchain, subst, work, lease, get_module_elf):
         loaded.append({**entry, "elf": rel})
         notes.append(f"# module {ident}: symbols loaded\n")
 
+    commands = ()
     if loaded and spec.add_symbols:
         # The debugger's syntax for this comes from the descriptor; paths are
-        # jail-relative and the debugger runs with /work as its cwd.
-        commands = modreg.render_add_symbols(spec.add_symbols, loaded)
-        _write(work, SYMBOLS_FILE, ("\n".join(commands) + "\n").encode(), lease.gid)
-    return loaded, tuple(notes)
+        # jail-relative and the debugger runs with /work as its cwd. The file
+        # itself is written by prepare(), which merges these with any extra
+        # symbol sources so the debugger loads one script.
+        commands = tuple(modreg.render_add_symbols(spec.add_symbols, loaded))
+    return loaded, tuple(notes), commands

@@ -507,6 +507,10 @@ report:                             # the text stored as crash.dump
 interactive:                        # what the pty attaches to
   command: ["{debugger}", -nx, -q, "{prog}", -ex, "core-file {core}"]
 
+symbols:                            # optional: extra symbol sources
+  commands:                         # stdout is debugger script
+    - ["{python}", "{root}/tools/rom_symbols.py", "{chip}", "{core}"]
+
 modules:                            # omit entirely if the target has none
   registry: esp_crash_modmap
   batch: ["{debugger}", -batch, -nx, "{prog}", -ex, "core-file {core}"]
@@ -519,7 +523,7 @@ variants:                           # one payload, several selectable ids
 ```
 
 Placeholders are a closed set (`{root} {debugger} {python} {dump} {prog} {core}
-{symbols_file} {work}`, plus the module fields inside `add_symbols`), and an
+{symbols_file} {work} {chip}`, plus the module fields inside `add_symbols`), and an
 unrecognised one is a load error rather than a literal that fails somewhere far
 away. Commands are argv lists substituted per element and executed without a
 shell, so no descriptor value can inject an argument.
@@ -527,6 +531,26 @@ shell, so no descriptor value can inject an argument.
 `variants` exists because the three Xtensa chips differ only in a ~400 KB core
 configuration object. Per-chip packages would triplicate a 9 MB debugger and an
 86 MB interpreter for that.
+
+### Symbol sources beyond the build ELF
+
+A backtrace needs symbols for every address it lands on, and some of those
+addresses are in neither the application ELF nor a runtime-loaded module. On
+Espressif parts the interrupt and startup paths run from mask ROM, so a frame
+there resolves to `?? ()` without the matching ROM image — measured on a real
+ESP32 crash, `0x4000bff0 in ??` where the batch report said
+`0x4000bff0 in _xtos_set_intlevel`. Only the interactive session was affected,
+because esp-coredump loads the ROM ELF itself when it produces a report.
+
+Which ROM image applies depends on the chip *revision*, recorded in the core
+dump rather than known up front, so the descriptor cannot name a static path.
+The `symbols` phase names a command instead: its stdout is debugger script,
+merged with any module symbols into `{symbols_file}`, which the `report` and
+`interactive` phases load through their `with_symbols`. The Espressif package
+ships a `tools/rom_symbols.py` that reuses esp-coredump's own revision
+selection, so there is no second implementation of it to drift. It prints
+nothing and exits 0 when the image cannot be determined: missing symbols cost
+some frames their names, which must never cost the session.
 
 **The toolchains directory is as trusted as the image was** — a descriptor names
 commands to execute. Mount it read-only, own it as root, and never let the

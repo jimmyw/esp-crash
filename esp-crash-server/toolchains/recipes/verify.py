@@ -32,11 +32,12 @@ import sys
 # command line as a literal and fail somewhere far away.
 PLACEHOLDERS = {
     "root", "debugger", "python", "dump", "prog", "core", "symbols_file", "work",
+    "chip",
 }
 # Only inside modules.add_symbols, where values come from the module registry.
 MODULE_PLACEHOLDERS = {"elf", "name", "version", "sha1", "text", "data", "bss", "rodata"}
 
-PHASES = ("core", "report")
+PHASES = ("core", "report", "symbols")
 
 failures = []
 notes = []
