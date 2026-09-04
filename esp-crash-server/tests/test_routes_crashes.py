@@ -165,3 +165,43 @@ def test_delete_crash_removes_row_and_redirects(client, db_conn):
     with db_conn.cursor() as cur:
         cur.execute("SELECT 1 FROM crash WHERE crash_id = %s", (crash_id,))
         assert cur.fetchone() is None
+
+
+# --- /c/<id>: the short link handed out by /dump ----------------------------
+
+def test_short_link_redirects_to_the_project_scoped_page(client, db_conn):
+    """A shared short link must land on the same URL as every in-app link, so
+    the page, its bookmarks and the browser history all agree."""
+    helpers.create_project(db_conn, "proj-short", github_user="none")
+    device_id = helpers.create_device(db_conn, "dev-short")
+    crash_id = helpers.create_crash(db_conn, "proj-short", "1.0", device_id, dump="short link text")
+
+    resp = client.get(f"/c/{crash_id}")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/projects/proj-short/{crash_id}")
+
+    followed = client.get(f"/c/{crash_id}", follow_redirects=True)
+    assert followed.status_code == 200
+    assert b"short link text" in followed.data
+
+
+def test_short_link_for_an_unknown_crash_is_404(client):
+    assert client.get("/c/999999").status_code == 404
+
+
+def test_short_link_for_an_inaccessible_crash_is_404_not_a_redirect(client, db_conn):
+    """A crash the caller cannot see must be indistinguishable from one that
+    does not exist. Redirecting would answer "which project is crash N in?"
+    for anyone holding an id."""
+    device_id = helpers.create_device(db_conn, "dev-short-noacl")
+    # No project_auth row for this project, so it is not visible to anyone.
+    crash_id = helpers.create_crash(db_conn, "proj-short-noacl", "1.0", device_id, dump="hidden")
+
+    resp = client.get(f"/c/{crash_id}")
+    assert resp.status_code == 404
+    assert b"proj-short-noacl" not in resp.data
+
+
+def test_short_link_rejects_a_non_numeric_id(client):
+    """The int converter keeps junk out of the database comparison."""
+    assert client.get("/c/not-a-number").status_code == 404

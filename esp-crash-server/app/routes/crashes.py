@@ -26,6 +26,34 @@ def show_crash(crash_id):
 
 
 @login_required
+def short_crash(crash_id):
+    """Resolve a short crash link to the canonical, project-scoped page.
+
+    `/c/<id>` exists because the ingestion endpoint hands a link back to the
+    device that uploaded the crash (see app/routes/ingest.py:dump), and at that
+    point the crash id is the only thing either side has - the project name is
+    in the dump, but a URL that has to carry it is neither short nor stable if
+    a project is ever renamed. Redirecting rather than rendering means a shared
+    link still lands on the same page as every in-app link, so bookmarks and
+    the browser history agree with the rest of the app.
+
+    Scoped exactly like the crash page itself, and a crash the caller cannot
+    see is indistinguishable from one that does not exist - otherwise this
+    would answer "which project is crash 116390 in?" for anyone with an id.
+    """
+    project_name = db.session.execute(
+        select(Crash.project_name)
+        .select_from(Crash)
+        .join(ProjectAuth, Crash.project_name == ProjectAuth.project_name)
+        .where(Crash.crash_id == crash_id, auth_filter(ProjectAuth.github))
+    ).scalars().first()
+    if project_name is None:
+        return "Not found", 404
+    return redirect(url_for("show_project_crash",
+                            project_name=project_name, crash_id=crash_id))
+
+
+@login_required
 def show_project_crash(project_name, crash_id):
     """Display crash details for a project."""
 
@@ -347,6 +375,9 @@ def debug_crash(project_name, crash_id):
 
 def register(app):
     app.add_url_rule('/crash/<crash_id>', endpoint="show_crash", view_func=show_crash)
+    # Short link, handed out by /dump. int converter so a malformed id is a
+    # 404 from the router rather than a database comparison.
+    app.add_url_rule('/c/<int:crash_id>', endpoint="short_crash", view_func=short_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>', endpoint="show_project_crash", view_func=show_project_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>/refresh', endpoint="refresh_crash", view_func=refresh_crash)
     app.add_url_rule('/projects/<project_name>/<crash_id>/reload-summary', endpoint="reload_crash_summary", view_func=reload_crash_summary, methods=['POST'])
