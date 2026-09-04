@@ -280,3 +280,60 @@ def test_names_lists_every_variant(tmp_path):
           a-chip: {}
         """)
     assert toolchains.names() == ["a-chip", "b-chip"]
+
+
+# --- extra symbol sources (the `symbols` phase) -----------------------------
+
+def test_symbols_phase_is_optional_and_absent_by_default(tmp_path):
+    write_package(tmp_path, "one")
+    assert toolchains.get("fake-elf").symbols is None
+
+
+def test_symbols_phase_is_parsed_and_rendered(tmp_path):
+    """A chip ROM is neither the build ELF nor a runtime-loaded module, and
+    which image applies depends on the revision recorded in the core - so the
+    descriptor names a command that prints debugger script rather than a
+    static path."""
+    pkg = write_package(tmp_path, "one", extra="""\
+        python: bin/fake-python
+        symbols:
+          timeout: 60
+          commands:
+            - ["{python}", "{root}/tools/rom_symbols.py", "{chip}", "{core}"]
+        """)
+    interpreter = pkg / "bin" / "fake-python"
+    interpreter.write_text("#!/bin/sh\nexit 0\n")
+    interpreter.chmod(0o755)
+    tc = toolchains.get("fake-elf")
+    assert tc.symbols is not None
+    assert tc.symbols.timeout == 60
+    argv = tc.render(tc.symbols, {
+        "python": "/pkg/python3", "root": "/pkg", "chip": "esp32", "core": "core.elf",
+    })
+    assert argv == [["/pkg/python3", "/pkg/tools/rom_symbols.py", "esp32", "core.elf"]]
+
+
+def test_chip_is_a_known_placeholder(tmp_path):
+    """Variants already declare `chip`; commands may use it, which is what
+    lets one descriptor serve several chips with per-chip symbol sources."""
+    write_package(tmp_path, "one", extra="""\
+        symbols:
+          commands: [["{debugger}", "--chip", "{chip}"]]
+        """)
+    assert toolchains.get("fake-elf").symbols is not None
+
+
+def test_symbols_phase_rejects_an_unknown_placeholder(tmp_path):
+    write_package(tmp_path, "one", extra="""\
+        symbols:
+          commands: [["{debugger}", "{nonsense}"]]
+        """)
+    with pytest.raises(toolchains.DescriptorError) as e:
+        toolchains.installed()
+    assert "nonsense" in str(e.value)
+
+
+def test_symbols_phase_declared_without_commands_is_an_error(tmp_path):
+    write_package(tmp_path, "one", extra="symbols:\n  timeout: 60\n")
+    with pytest.raises(toolchains.DescriptorError):
+        toolchains.installed()
