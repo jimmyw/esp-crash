@@ -119,3 +119,29 @@ def test_the_page_writes_multi_line_messages_line_by_line(page):
     assert "split(/\\r?\\n/)" in page
     # ...and nothing may write a raw message straight to the terminal.
     assert "term.writeln('\\x1b[90m' + msg.message" not in page
+
+
+def test_the_scrollbar_gutter_is_enforced_from_the_dom(page):
+    """xterm sizes .xterm-screen to the renderer's canvas width and paints it
+    over .xterm-viewport, so a screen as wide as the viewport buries the
+    scrollbar. Measured on the live page: both 1119px, gutter 0, with 6075px
+    of scrollback behind a bar that could not be seen or dragged. The fit
+    addon's own scrollbar reservation did not produce a gutter, so the page
+    must measure the two elements and trim columns itself."""
+    assert "function fitTerminal" in page
+    assert ".xterm-viewport" in page and ".xterm-screen" in page
+    assert "viewport.offsetWidth - screen.offsetWidth" in page
+    # Refitting on resize must go through the gutter check, not fit.fit()
+    # directly, or a window resize silently reintroduces the overlap.
+    assert "setTimeout(() => { fitTerminal(); sendResize(); }" in page
+
+
+def test_the_scrollbar_width_agrees_between_css_and_js(page):
+    """The trim arithmetic reserves SCROLLBAR_PX; the stylesheet decides how
+    wide the bar actually is. If they drift apart the gutter is either too
+    narrow to reach or wider than it needs to be."""
+    css = re.search(r"::-webkit-scrollbar\s*{\s*width:\s*(\d+)px", page)
+    js = re.search(r"SCROLLBAR_PX\s*=\s*(\d+)", page)
+    assert css and js, "could not find both the CSS width and the JS constant"
+    assert css.group(1) == js.group(1), \
+        f"CSS scrollbar is {css.group(1)}px but JS reserves {js.group(1)}px"

@@ -22,6 +22,33 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
 
+{# Make the terminal's scrollbar visible, and reserve room for it.
+
+   xterm appends .xterm-screen *after* .xterm-viewport with both positioned at
+   z-index auto, so the screen paints over the viewport wherever they overlap -
+   the scrollbar included. The fit addon is supposed to prevent that by
+   subtracting a scrollbar width when it computes columns, but measured on this
+   page it did not: viewport and screen both came out 1119px wide, gutter 0,
+   with 6075px of scrollback behind an unreachable bar. So the gutter is
+   enforced from the measured DOM in fitTerminal() below, and SCROLLBAR_PX
+   there must match the width declared here.
+
+   The explicit thumb colour is worth having regardless: the browser default
+   over a pure black viewport is nearly invisible. #}
+<style>
+    #term .xterm-viewport {
+        scrollbar-width: thin;
+        scrollbar-color: #4b5563 #000000;
+    }
+    #term .xterm-viewport::-webkit-scrollbar       { width: 10px; }
+    #term .xterm-viewport::-webkit-scrollbar-track { background: #000000; }
+    #term .xterm-viewport::-webkit-scrollbar-thumb {
+        background: #4b5563;
+        border-radius: 5px;
+    }
+    #term .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+</style>
+
 <div class="flex items-baseline justify-between mb-2">
     <h1 class="text-3xl font-bold">Debug crash {{ crash_id }}</h1>
     <a href="{{ url_for('show_project_crash', project_name=project_name, crash_id=crash_id) }}"
@@ -77,7 +104,35 @@
         term.loadAddon(fit);
     }
     term.open(document.getElementById('term'));
-    if (fit) { fit.fit(); }
+
+    // Width of the scrollbar declared in the <style> block above.
+    const SCROLLBAR_PX = 10;
+
+    // Fit the terminal to its box, then make sure the scrollbar is actually
+    // reachable. xterm sizes .xterm-screen to the renderer's canvas width and
+    // paints it over .xterm-viewport, so a screen as wide as the viewport
+    // buries the scrollbar completely - which is what happened here. Measuring
+    // the two elements and trimming columns enforces the gutter whatever the
+    // addon's own reservation did, and costs a column or two of width.
+    function fitTerminal() {
+        // The addon is optional (see above); the gutter check is not, so it
+        // runs whether or not the terminal was refitted.
+        if (fit) { fit.fit(); }
+
+        const viewport = document.querySelector('#term .xterm-viewport');
+        const screen = document.querySelector('#term .xterm-screen');
+        if (!viewport || !screen || term.cols <= 2) { return; }
+
+        const gutter = viewport.offsetWidth - screen.offsetWidth;
+        if (gutter >= SCROLLBAR_PX) { return; }
+
+        const cellWidth = screen.offsetWidth / term.cols;
+        if (!(cellWidth > 0)) { return; }
+        const trim = Math.max(1, Math.ceil((SCROLLBAR_PX - gutter) / cellWidth));
+        term.resize(Math.max(2, term.cols - trim), term.rows);
+    }
+
+    fitTerminal();
 
     const dot = document.getElementById('dot');
     const stateText = document.getElementById('state');
@@ -189,7 +244,7 @@
     let resizeTimer = null;
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => { if (fit) { fit.fit(); } sendResize(); }, 120);
+        resizeTimer = setTimeout(() => { fitTerminal(); sendResize(); }, 120);
     });
 
     reconnectBtn.addEventListener('click', () => { term.reset(); connect(); });
