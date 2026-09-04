@@ -156,3 +156,35 @@ def test_upload_module_elf_conflict_does_nothing(client, db_conn):
         rows = cur.fetchall()
         assert len(rows) == 1
         assert rows[0][0] == "mod-a"
+
+
+def test_dump_returns_a_short_link_to_the_stored_crash(client, db_conn):
+    """Whatever uploaded the crash knows its id and nothing else, so the
+    response carries a link it can log or forward."""
+    content = helpers.crash_dump_bytes(project_name="proj-dump-link", project_ver="1.0",
+                                       device_id="dev-dump-link")
+    resp = _upload_dump(client, content)
+    assert resp.status_code == 200
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT crash_id FROM crash WHERE project_name = %s", ("proj-dump-link",))
+        crash_id = cur.fetchone()[0]
+
+    body = resp.data.decode()
+    assert f"/c/{crash_id}" in body, body
+    # The "OK" prefix is kept for devices already in the field.
+    assert body.startswith("OK ")
+
+
+def test_dump_short_link_resolves_to_the_crash(client, db_conn):
+    """End to end: the link the device is handed is one a person can open."""
+    helpers.create_project(db_conn, "proj-dump-follow", github_user="none")
+    content = helpers.crash_dump_bytes(project_name="proj-dump-follow", project_ver="1.0",
+                                       device_id="dev-dump-follow")
+    resp = _upload_dump(client, content)
+    path = resp.data.decode().split()[1]
+    path = path[path.index("/c/"):].strip()
+
+    followed = client.get(path)
+    assert followed.status_code == 302
+    assert "/projects/proj-dump-follow/" in followed.headers["Location"]

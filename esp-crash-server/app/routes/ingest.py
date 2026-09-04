@@ -12,6 +12,7 @@ from sqlalchemy import func, insert, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..models import Crash, Device, ElfFile, ModuleElf, db
+from ..rendering import external_url_for
 
 
 def dump():
@@ -81,17 +82,25 @@ def dump():
     ).returning(Device.device_id)
     device_id = db.session.execute(upsert).scalar()
 
-    db.session.execute(insert(Crash).values(
+    crash_id = db.session.execute(insert(Crash).values(
         date=func.now(),
         project_name=arguments["PROJECT_NAME"],
         project_ver=arguments["PROJECT_VER"],
         crash_dmp=compressed_content,
         device_id=device_id,
-    ))
+    ).returning(Crash.crash_id)).scalar()
 
     # Commit the changes and close the connection
     db.session.commit()
-    return "OK", 200
+
+    # Hand back a link to what was just stored, so whatever uploaded it can
+    # log or forward somewhere to look. The short form keeps the project name
+    # out of it - the uploader knows the id and nothing else, and
+    # /c/<id> resolves the rest (see app/routes/crashes.py:short_crash).
+    #
+    # The body keeps its "OK" prefix: devices in the field predate this and
+    # some may check it, so the link is appended rather than replacing it.
+    return f"OK {external_url_for('short_crash', crash_id=crash_id)}\n", 200
 
 
 def upload_elf():
