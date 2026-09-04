@@ -161,20 +161,24 @@ bzip2 -c crash.dmp | curl "https://esp-crash.wennlund.nu/dump" -F file=@-
 
 ```
 
-`/dump` answers with a short link to the crash it just stored, so whatever
-uploaded it can log or forward somewhere to look:
+`/dump` answers with a link to the crash it just stored — the URL and nothing
+else, since the 200 already says it worked:
 
 ```
-OK https://esp-crash.wennlund.nu/c/116390
+https://esp-crash.wennlund.nu/crash/116390
 ```
 
-`/c/<id>` redirects to that crash's page. The short form is deliberate: the
-uploader knows the crash id and nothing else, and a link carrying the project
-name would not survive a rename. It is scoped like every other page — a crash
-you cannot see gives 404 rather than redirecting, so an id alone never reveals
-which project it belongs to. The `OK` prefix is kept so devices already in the
-field that check the body still see what they expect. The absolute URL comes
-from `EXTERNAL_URL`, the same setting webhook and Slack links use.
+so a shell caller can use it directly:
+
+```sh
+open "$(bzip2 -c crash.dmp | curl -s "https://esp-crash.wennlund.nu/dump" -F file=@-)"
+```
+
+`/crash/<id>` infers the project rather than carrying it, which is what the
+uploader can actually address: it knows the crash id and nothing else. The page
+is scoped like every other one, so a crash you cannot see gives 404 and an id
+alone never reveals which project it belongs to. The absolute URL comes from
+`EXTERNAL_URL`, the same setting webhook and Slack links use.
 
 
 ## Interval crash upload
