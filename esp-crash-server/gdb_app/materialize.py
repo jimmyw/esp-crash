@@ -295,8 +295,10 @@ def _extra_symbols(toolchain, subst, convert):
             continue
         out = (result.stdout or b"").decode("utf-8", "replace")
         commands += [line for line in (l.strip() for l in out.splitlines()) if line]
-    if commands:
-        notes.append(f"# extra symbol sources loaded: {len(commands)}\n")
+    # Nothing is reported on success. The note would head every stored report
+    # with "extra symbol sources loaded: 1" - a count with no subject, ahead of
+    # the backtrace someone actually opened the page for. A failure still says
+    # so, because that one explains missing frame names.
     return tuple(commands), tuple(notes)
 
 
