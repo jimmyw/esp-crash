@@ -70,6 +70,13 @@ services:
   esp-crash-gdb:
     build: esp-crash-server
     restart: always
+    # bwrap forks a sandbox-init process, and when it outlives the bwrap we
+    # spawned it is reparented to this container's PID 1. uvicorn is not an
+    # init and never reaps, so those pile up as zombies - and a zombie still
+    # holds a slot against the uid's RLIMIT_NPROC (jail.Limits.processes),
+    # so the batch pool's four accounts eventually cannot fork at all and
+    # every decode fails. Run docker's init as PID 1 so orphans get reaped.
+    init: true
     command: uvicorn gdb_server:app --host 0.0.0.0 --port 8002
     ports:
       - 8002:8002

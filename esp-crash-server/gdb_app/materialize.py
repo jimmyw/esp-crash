@@ -42,6 +42,30 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 REGISTRY_PROTOCOLS = {"esp_crash_modmap"}
 
 
+class SandboxUnavailable(Exception):
+    """The sandbox itself could not be started.
+
+    Emphatically not a property of the artifact, and the distinction is
+    load-bearing: treated as a bad dump it gets written into `crash.dump` and
+    the row is marked processed forever. That is exactly what happened when
+    zombie bwrap processes exhausted the batch accounts' RLIMIT_NPROC - 242
+    real crashes had "bwrap: Can't fork for pid 1" stored as their backtrace,
+    permanently, because a transient resource failure was reported as
+    convert_failed. Callers must retry this rather than record it.
+    """
+
+
+def _sandbox_failed(text):
+    """Whether bwrap reported that it could not build the sandbox.
+
+    bwrap writes its own diagnostics with a `bwrap: ` prefix and they reach us
+    on the phase's captured output; the jailed command never gets to run, so
+    anything else in that output is absent rather than misleading.
+    """
+    return any(line.startswith("bwrap: ")
+               for line in (text or "").splitlines())
+
+
 class NotDebuggable(Exception):
     """The crash cannot be debugged, with a reason meant for the user.
 
@@ -203,6 +227,10 @@ def _make_core(toolchain, subst, convert, work, lease):
     grant_tree_to_session(work, lease.gid)
 
     if not os.path.exists(os.path.join(work, CORE)):
+        if _sandbox_failed(log):
+            raise SandboxUnavailable(
+                "The debug sandbox could not be started, so this crash was not "
+                "decoded.\n\n" + log)
         raise NotDebuggable(
             "The crash dump could not be converted into a core file. It may be "
             "truncated, or from a firmware version this toolchain cannot read."
@@ -233,6 +261,12 @@ def _make_report(toolchain, subst, convert, convert_log, modules, with_symbols=F
     for argv in toolchain.render(toolchain.report, subst, with_symbols=with_symbols):
         result = jail.run_batch(convert, argv, timeout=toolchain.report.timeout)
         report += (result.stdout or b"").decode("utf-8", "replace")
+    if _sandbox_failed(report):
+        # The conversion succeeded, so the artifact is fine; storing this text
+        # as the backtrace would mark a decodable crash permanently broken.
+        raise SandboxUnavailable(
+            "The debug sandbox could not be started for the report pass.\n\n"
+            + report)
     return report
 
 

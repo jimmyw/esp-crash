@@ -68,6 +68,38 @@ def needs_toolchain():
         pytest.skip("no toolchain package mounted at /opt/toolchains")
 
 
+@pytest.fixture
+def needs_sandbox(needs_toolchain):
+    """Skip when bwrap cannot actually build a sandbox here.
+
+    A test that asserts something about an *artifact* only means what it says
+    if the sandbox started; otherwise it is asserting about a failure to
+    unshare namespaces, which needs privileges this suite does not always
+    have. That distinction used to be invisible: a sandbox that would not
+    start was reported as `convert_failed`, so this test passed in an
+    unprivileged container while exercising nothing it claimed to.
+    """
+    import toolchains
+    from gdb_app import jail
+    from gdb_app.uidpool import SessionPool, discover_accounts
+
+    accounts = discover_accounts()
+    if not accounts:
+        pytest.skip("no gdbrun* accounts in this image")
+    toolchain = next(iter(toolchains.installed().values()))
+    pool = SessionPool(accounts=accounts[-1:])
+    lease = pool.acquire_sync()
+    try:
+        spec = jail.JailSpec(toolchain=toolchain, workdir=lease.workdir,
+                             uid=lease.uid, gid=lease.gid, tier=jail.CONVERT)
+        result = jail.run_batch(spec, [toolchain.exe, "--version"], timeout=60)
+        output = (result.stdout or b"").decode("utf-8", "replace")
+        if result.returncode != 0 or output.startswith("bwrap: "):
+            pytest.skip(f"sandbox unavailable here: {output.strip()[:80]}")
+    finally:
+        pool.release_sync(lease)
+
+
 def post(client, payload, token=TOKEN):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return client.post("/v1/decode", json=payload, headers=headers)
@@ -142,7 +174,7 @@ def test_a_crash_with_no_build_is_retryable(build, db_conn, needs_toolchain):
     assert r.json()["error"]["retryable"] is True
 
 
-def test_an_undecodable_artifact_is_permanent(build, db_conn, needs_toolchain):
+def test_an_undecodable_artifact_is_permanent(build, db_conn, needs_sandbox):
     """Garbage will not become decodable on the next tick, and retrying it
     forever would consume the batch budget that real crashes need."""
     crash_id = seed(db_conn, dump=b"definitely not a coredump")
@@ -171,3 +203,56 @@ def test_info_reports_decode_disabled_when_no_token(build):
 def _accounts():
     from gdb_app.uidpool import discover_accounts
     return discover_accounts()
+
+
+# --- a broken sandbox must never be recorded as a broken crash --------------
+
+def test_sandbox_failure_is_retryable_not_a_stored_dump(monkeypatch):
+    """Zombie bwrap processes exhausted the batch accounts' RLIMIT_NPROC, so
+    bwrap could not fork. That was reported as convert_failed - permanent - and
+    242 real crashes had "bwrap: Can't fork for pid 1" written into their
+    backtrace before anyone noticed. A sandbox that will not start is our
+    problem, so it must come back retryable and leave the row alone."""
+    from gdb_app import decode as gdbdecode, materialize
+
+    def _boom(*a, **k):
+        raise materialize.SandboxUnavailable(
+            "The debug sandbox could not be started, so this crash was not "
+            "decoded.\n\nbwrap: Can't fork for pid 1: Resource temporarily unavailable")
+
+    monkeypatch.setattr(materialize, "prepare", _boom)
+
+    class _Lease:
+        uid = gid = 1
+        workdir = "/tmp"
+
+    class _Pool:
+        def acquire_sync(self):
+            return _Lease()
+
+        def release_sync(self, lease):
+            pass
+
+    class _TC:
+        name, arch, version, chip = "t", "a", "1", None
+        requires = ()
+
+    monkeypatch.setattr(gdbdecode, "resolve_toolchain", lambda name: (_TC(), "project"))
+
+    with pytest.raises(gdbdecode.DecodeError) as e:
+        gdbdecode.decode({"dump": b"x", "prog": b"y", "project_name": "p",
+                          "project_ver": "1", "toolchain": "t"},
+                         _Pool(), lambda sha1: None)
+    assert e.value.retryable is True
+    assert e.value.code == "sandbox_unavailable"
+
+
+def test_bwrap_diagnostics_are_recognised_as_a_sandbox_failure():
+    from gdb_app.materialize import _sandbox_failed
+
+    assert _sandbox_failed("bwrap: Can't fork for pid 1: Resource temporarily unavailable")
+    assert _sandbox_failed("some output\nbwrap: setting up uid map: Permission denied\n")
+    # A real backtrace mentioning the word must not be mistaken for one.
+    assert not _sandbox_failed("#0  bwrap_helper () at foo.c:1\n")
+    assert not _sandbox_failed("")
+    assert not _sandbox_failed(None)

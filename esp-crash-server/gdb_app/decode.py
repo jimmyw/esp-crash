@@ -113,6 +113,13 @@ def decode(artifacts, pool, get_module_elf, logger=None):
     try:
         try:
             prepared = materialize.prepare(artifacts, toolchain, lease, get_module_elf)
+        except materialize.SandboxUnavailable as e:
+            # Our side failed, not the artifact. Retryable, and deliberately
+            # checked before NotDebuggable: recording this would write the
+            # sandbox's diagnostics into the crash's backtrace and mark it
+            # processed for good.
+            raise DecodeError("sandbox_unavailable", str(e),
+                              retryable=True, status=503) from None
         except materialize.NotDebuggable as e:
             # The artifact itself will not decode. Permanent: reprocessing it
             # every tick would achieve nothing.
