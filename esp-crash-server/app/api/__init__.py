@@ -16,6 +16,7 @@ api_v1 = APIBlueprint("api_v1", __name__, url_prefix="/api/v1")
 
 from . import csrf as _csrf  # noqa: E402
 from . import errors as _errors  # noqa: E402
+from . import ingest_spec as _ingest_spec  # noqa: E402
 
 api_v1.before_request(_csrf.enforce_csrf)
 api_v1.after_request(_csrf.apply_cors_headers)
@@ -30,12 +31,24 @@ def register_api(app):
     app.register_blueprint(api_v1)
 
     @app.spec_processor
-    def _api_only_spec(spec):
-        """APIFlask documents every view function on the app by default,
-        HTML routes included (they just get a generic response entry). Keep
-        the published spec/Swagger UI scoped to the actual JSON API instead
-        of mixing in every Jinja-rendered page."""
+    def _published_spec(spec):
+        """Decide what the published spec covers.
+
+        APIFlask documents every view function on the app by default, so
+        without this the spec carries ~40 extra paths, nearly all of them
+        Jinja-rendered pages and OAuth callbacks (`/dashboard`, `/settings`,
+        `/slack/callback`, ...) with meaningless empty JSON schemas.
+
+        Filtering by the `/api/v1/` prefix removed those, but it also removed
+        the three device-facing ingestion endpoints, which are outside that
+        prefix and are exactly the ones a newcomer most needs documented. So
+        the prefix decides the API surface, and the ingestion endpoints are
+        added back from hand-written path items - what APIFlask infers for
+        them on its own is actively wrong (see app/api/ingest_spec.py).
+        """
         spec["paths"] = {
             path: item for path, item in spec["paths"].items() if path.startswith("/api/v1/")
         }
+        spec["paths"].update(_ingest_spec.INGEST_PATHS)
+        spec.setdefault("tags", []).append(_ingest_spec.TAG)
         return spec
